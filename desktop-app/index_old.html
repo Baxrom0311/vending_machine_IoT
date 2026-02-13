@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eWater Device Manager</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <h1>🌊 eWater Device Manager</h1>
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-dot"></span>
+                <span>Disconnected</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Sidebar: Device List -->
+            <aside class="sidebar">
+                <h2>Devices</h2>
+                <div class="device-list" id="deviceList">
+                    <p class="placeholder">No devices found</p>
+                </div>
+                <button class="btn btn-primary" id="scanBtn">🔍 Scan Ports</button>
+            </aside>
+
+            <!-- Center: Configuration Form -->
+            <main class="config-panel">
+                <div class="tabs">
+                    <button class="tab active" data-tab="config">Configuration</button>
+                    <button class="tab" data-tab="firmware">Firmware</button>
+                    <button class="tab" data-tab="monitor">Serial Monitor</button>
+                </div>
+
+                <!-- Configuration Tab -->
+                <div class="tab-content active" id="configTab">
+                    <section class="config-section">
+                        <h3>Network</h3>
+                        <div class="form-grid two">
+                            <div class="form-group">
+                                <label>WiFi SSID</label>
+                                <input type="text" id="wifiSsid" placeholder="Network name">
+                            </div>
+                            <div class="form-group">
+                                <label>WiFi Password</label>
+                                <input type="password" id="wifiPassword" placeholder="Network password">
+                            </div>
+                            <div class="form-group">
+                                <label>MQTT Broker</label>
+                                <input type="text" id="mqttBroker" placeholder="broker.example.com">
+                            </div>
+                            <div class="form-group">
+                                <label>MQTT Port</label>
+                                <input type="number" id="mqttPort" value="1883">
+                            </div>
+                            <div class="form-group">
+                                <label>MQTT Username</label>
+                                <input type="text" id="mqttUsername" placeholder="(optional)">
+                            </div>
+                            <div class="form-group">
+                                <label>MQTT Password</label>
+                                <input type="password" id="mqttPassword" placeholder="(optional)">
+                            </div>
+                            <div class="form-group">
+                                <label>Device ID</label>
+                                <input type="text" id="deviceId" placeholder="VendingMachine_001">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="config-section">
+                        <h3>Vending</h3>
+                        <div class="form-grid three">
+                            <div class="form-group">
+                                <label>Price per Liter (so'm)</label>
+                                <input type="number" id="pricePerLiter" value="1000">
+                            </div>
+                            <div class="form-group">
+                                <label>Session Timeout (sec)</label>
+                                <input type="number" id="sessionTimeout" value="300">
+                            </div>
+                            <div class="form-group">
+                                <label>Enable Free Water</label>
+                                <div class="toggle-row">
+                                    <input type="checkbox" id="enableFreeWater" checked>
+                                    <span>Enabled</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Free Water Cooldown (sec)</label>
+                                <input type="number" id="freeWaterCooldown" value="180">
+                            </div>
+                            <div class="form-group">
+                                <label>Free Water Amount (ml)</label>
+                                <input type="number" id="freeWaterAmount" value="200">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="config-section">
+                        <h3>Sensors</h3>
+                        <div class="form-grid four">
+                            <div class="form-group">
+                                <label>Pulses per Liter</label>
+                                <input type="number" id="pulsesPerLiter" value="450" step="0.1">
+                            </div>
+                            <div class="form-group">
+                                <label>TDS Threshold (ppm)</label>
+                                <input type="number" id="tdsThreshold" value="100">
+                            </div>
+                            <div class="form-group">
+                                <label>TDS Temperature (°C)</label>
+                                <input type="number" id="tdsTemperatureC" value="25" step="0.1">
+                            </div>
+                            <div class="form-group">
+                                <label>TDS Calibration Factor</label>
+                                <input type="number" id="tdsCalibrationFactor" value="0.5" step="0.01">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="config-section">
+                        <h3>Cash Acceptor</h3>
+                        <div class="form-grid three">
+                            <div class="form-group">
+                                <label>Pulse Value (so'm)</label>
+                                <input type="number" id="cashPulseValue" value="1000">
+                            </div>
+                            <div class="form-group">
+                                <label>Pulse Gap (ms)</label>
+                                <input type="number" id="cashPulseGapMs" value="120">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="config-section">
+                        <h3>Security</h3>
+                        <div class="form-grid two">
+                            <div class="form-group">
+                                <label>API Secret (for signatures)</label>
+                                <input type="password" id="apiSecret" placeholder="Leave blank to keep current">
+                            </div>
+                            <div class="form-group">
+                                <label>Require Signed MQTT</label>
+                                <div class="toggle-row">
+                                    <input type="checkbox" id="requireSigned">
+                                    <span>Enabled</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Allow Remote Network Config</label>
+                                <div class="toggle-row">
+                                    <input type="checkbox" id="allowRemoteNetcfg" checked>
+                                    <span>Allowed</span>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="config-section">
+                        <h3>Intervals</h3>
+                        <div class="form-grid four">
+                            <div class="form-group">
+                                <label>Payment Check (ms)</label>
+                                <input type="number" id="paymentCheckInterval" value="2000">
+                            </div>
+                            <div class="form-group">
+                                <label>Display Update (ms)</label>
+                                <input type="number" id="displayUpdateInterval" value="100">
+                            </div>
+                            <div class="form-group">
+                                <label>TDS Check (ms)</label>
+                                <input type="number" id="tdsCheckInterval" value="5000">
+                            </div>
+                            <div class="form-group">
+                                <label>Heartbeat (ms)</label>
+                                <input type="number" id="heartbeatInterval" value="30000">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="config-section">
+                        <h3>Apply</h3>
+                        <div class="form-grid two">
+                            <div class="form-group">
+                                <label>Apply Mode</label>
+                                <select id="applyMode">
+                                    <option value="now" selected>Apply Now</option>
+                                    <option value="restart">Restart Device</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" id="loadConfigBtn">Load from Device</button>
+                            <button class="btn btn-success" id="saveConfigBtn">Save to Device</button>
+                        </div>
+                    </section>
+                </div>
+
+            <!-- Firmware Tab -->
+            <div class="tab-content" id="firmwareTab">
+                <section class="config-section">
+                    <h3>Firmware Update</h3>
+                    <div class="form-group">
+                        <label>Firmware File (.bin):</label>
+                        <div class="file-input-group">
+                            <input type="text" id="firmwarePath" readonly placeholder="Select .bin file">
+                            <button class="btn btn-secondary" id="browseFirmwareBtn">Browse</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Baud Rate:</label>
+                        <select id="flashBaud">
+                            <option value="115200">115200</option>
+                            <option value="230400">230400</option>
+                            <option value="460800" selected>460800</option>
+                            <option value="921600">921600</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Flash Type:</label>
+                        <select id="flashType">
+                            <option value="app" selected>App Only (0x10000)</option>
+                            <option value="full">Full Firmware (0x0000)</option>
+                        </select>
+                    </div>
+                    <div class="action-buttons">
+                        <button class="btn btn-warning" id="flashFirmwareBtn" disabled>⚡ Flash Firmware</button>
+                    </div>
+                    <div class="flash-progress" id="flashProgress" style="display: none;">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <p id="progressText">0%</p>
+                    </div>
+                    <div class="firmware-log" id="firmwareLog"></div>
+                    <p class="note">Note: Full firmware must be flashed at 0x0000. Device will restart after flashing.</p>
+                </section>
+            </div>
+
+            <!-- Serial Monitor Tab -->
+            <div class="tab-content" id="monitorTab">
+                <div class="serial-monitor">
+                    <div class="monitor-output" id="monitorOutput"></div>
+                    <div class="monitor-input">
+                        <input type="text" id="commandInput" placeholder="Enter command...">
+                        <button class="btn btn-primary" id="sendCommandBtn">Send</button>
+                    </div>
+                </div>
+            </div>
+            </main>
+        </div>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>eWater Device Manager v1.0.0 | © 2026 eWater Team</p>
+        </footer>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

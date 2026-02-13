@@ -1,0 +1,37 @@
+
+# PlatformIO
+.pio
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang-format
+.gcc-flags.json
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/c_cpp_properties.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Python
+**/__pycache__/
+*.pyc
+
+# Node.js (desktop-app)
+node_modules/
+npm-debug.log
+desktop-app/node_modules/
+
+# Compiled firmware
+**/*.bin
+**/*.elf
+**/*.map
+
+# Secrets (just in case future files are added)
+secrets.h
+private_config.h

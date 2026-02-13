@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eWater Manager v2.0</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Ionicons -->
+    <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- LEFT SIDEBAR -->
+        <aside class="sidebar-nav">
+            <div class="brand">
+                <ion-icon name="water"></ion-icon>
+                <span>eWater</span>
+            </div>
+
+            <div class="sidebar-section">
+                <label for="controllerSelect">Target Controller</label>
+                <select id="controllerSelect">
+                    <option value="main" selected>Main ESP32 (WiFi/MQTT)</option>
+                    <option value="payment">Payment ESP32 (Cash Only)</option>
+                </select>
+            </div>
+
+            <nav class="nav-menu">
+                <button class="nav-item active" data-view="serial-view">
+                    <ion-icon name="usb-outline"></ion-icon>
+                    <span>Serial Setup</span>
+                </button>
+                <button class="nav-item" data-view="online-view">
+                    <ion-icon name="globe-outline"></ion-icon>
+                    <span>Online Setup</span>
+                </button>
+            </nav>
+
+            <div class="nav-footer">
+                <span>v2.2.0</span>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT AREA -->
+        <main class="main-content">
+
+            <!-- SERIAL SETUP VIEW -->
+            <div id="serial-view" class="view-container active">
+                <header class="view-header">
+                    <h2>Serial Configuration</h2>
+                    <div class="port-selector">
+                        <select id="serialPortSelect">
+                            <option value="">Select Port...</option>
+                        </select>
+                        <button id="refreshPortsBtn" class="icon-btn" title="Refresh Ports">
+                            <ion-icon name="refresh"></ion-icon>
+                        </button>
+                        <button id="connectSerialBtn" class="btn btn-primary">Connect</button>
+                    </div>
+                </header>
+
+                <div class="tabs-header">
+                    <button class="tab-btn active" data-tab="serial-config-basic">Basic Config</button>
+                    <button class="tab-btn" data-tab="serial-config-extra">Extra Config</button>
+                    <button class="tab-btn" data-tab="serial-firmware">Firmware Flash</button>
+                    <button class="tab-btn" data-tab="serial-monitor">Serial Monitor</button>
+                </div>
+
+                <div class="tab-content">
+                    <!-- Serial Basic Config Tab -->
+                    <div id="serial-config-basic" class="tab-pane active">
+                        <div id="serialBasicConfigFormContainer"></div>
+                        <div class="action-buttons"
+                            style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px;">
+                            <div class="form-group" style="margin-bottom: 10px;">
+                                <label>Apply Action:</label>
+                                <select id="serial_basic_applyMode" style="width: auto;">
+                                    <option value="now">Apply Immediately</option>
+                                    <option value="restart">Restart Device</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-primary" id="serial_loadBasicConfigBtn">Load Basic</button>
+                            <button class="btn btn-success" id="serial_saveBasicConfigBtn">Save Basic</button>
+                        </div>
+                    </div>
+
+                    <!-- Serial Extra Config Tab -->
+                    <div id="serial-config-extra" class="tab-pane">
+                        <div id="serialExtraConfigFormContainer"></div>
+                        <div class="action-buttons"
+                            style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px;">
+                            <div class="form-group" style="margin-bottom: 10px;">
+                                <label>Apply Action:</label>
+                                <select id="serial_extra_applyMode" style="width: auto;">
+                                    <option value="now">Apply Immediately</option>
+                                    <option value="restart">Restart Device</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-primary" id="serial_loadExtraConfigBtn">Load Extra</button>
+                            <button class="btn btn-success" id="serial_saveExtraConfigBtn">Save Extra</button>
+                        </div>
+                    </div>
+
+                    <!-- Serial Firmware Tab -->
+                    <div id="serial-firmware" class="tab-pane">
+                        <div id="serialFirmwareContainer"></div>
+                    </div>
+
+                    <!-- Serial Monitor Tab -->
+                    <div id="serial-monitor" class="tab-pane">
+                        <div class="monitor-container">
+                            <div id="serialMonitorOutput" class="console-output"></div>
+                            <div class="console-input">
+                                <input type="text" id="serialCommandInput" placeholder="Send command...">
+                                <button id="serialSendBtn">Send</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ONLINE SETUP VIEW -->
+            <div id="online-view" class="view-container">
+                <header class="view-header">
+                    <h2>Online Management</h2>
+                    <div class="mqtt-status">
+                        <span class="status-indicator" id="mqttStatusDot"></span>
+                        <span id="mqttStatusText">Disconnected</span>
+                    </div>
+                </header>
+
+                <div class="tabs-header">
+                    <button class="tab-btn active" data-tab="online-connect">Connection</button>
+                    <button class="tab-btn" data-tab="online-devices">Devices</button>
+                    <button class="tab-btn" data-tab="online-config-basic">Basic Config</button>
+                    <button class="tab-btn" data-tab="online-config-extra">Extra Config</button>
+                    <button class="tab-btn" data-tab="online-ota">OTA Update</button>
+                    <button class="tab-btn" data-tab="online-monitor">Live Logs</button>
+                </div>
+
+                <div class="tab-content">
+                    <!-- Connection Tab -->
+                    <div id="online-connect" class="tab-pane active">
+                        <div class="card">
+                            <h3>MQTT Broker Connection</h3>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label>Broker Address</label>
+                                    <input type="text" id="mqttBrokerHost" value="broker.hivemq.com">
+                                </div>
+                                <div class="form-group">
+                                    <label>Port</label>
+                                    <input type="number" id="mqttBrokerPort" value="1883">
+                                </div>
+                                <div class="form-group">
+                                    <label>Username</label>
+                                    <input type="text" id="mqttBrokerUser">
+                                </div>
+                                <div class="form-group">
+                                    <label>Password</label>
+                                    <input type="password" id="mqttBrokerPass">
+                                </div>
+                                <div class="form-group full-width">
+                                    <button id="mqttConnectBtn" class="btn btn-primary">Connect to Broker</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Devices Tab -->
+                    <div id="online-devices" class="tab-pane">
+                        <div class="devices-list-container">
+                            <!-- Devices will be listed here -->
+                            <div id="onlineDevicesList" class="grid-list">
+                                <p class="placeholder-text">Connect to MQTT to see devices</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Online Basic Config Tab -->
+                    <div id="online-config-basic" class="tab-pane">
+                        <div class="device-header-bar">
+                            <span>Selected Device: <strong class="selectedDeviceConfigText">None</strong></span>
+                        </div>
+                        <div id="onlineBasicConfigFormContainer"></div>
+                        <div class="action-bar right">
+                            <select id="online_basic_applyMode" style="width: auto;">
+                                <option value="now" selected>Apply Now</option>
+                                <option value="restart">Restart</option>
+                            </select>
+                            <button id="onlineApplyBasicConfigBtn" class="btn btn-success">Apply Basic</button>
+                        </div>
+                    </div>
+
+                    <!-- Online Extra Config Tab -->
+                    <div id="online-config-extra" class="tab-pane">
+                        <div class="device-header-bar">
+                            <span>Selected Device: <strong class="selectedDeviceConfigText">None</strong></span>
+                        </div>
+                        <div id="onlineExtraConfigFormContainer"></div>
+                        <div class="action-bar right">
+                            <select id="online_extra_applyMode" style="width: auto;">
+                                <option value="now" selected>Apply Now</option>
+                                <option value="restart">Restart</option>
+                            </select>
+                            <button id="onlineApplyExtraConfigBtn" class="btn btn-success">Apply Extra</button>
+                        </div>
+                    </div>
+
+                    <!-- OTA Update Tab -->
+                    <div id="online-ota" class="tab-pane">
+                        <div class="device-header-bar">
+                            <span>Target Device: <strong id="selectedDeviceOta">None</strong></span>
+                        </div>
+                        <div class="card">
+                            <h3>Firmware Update (Over-The-Air)</h3>
+                            <div class="form-group">
+                                <label>Select Firmware File (.bin)</label>
+                                <div class="file-row">
+                                    <input type="file" id="otaFileInput" accept=".bin">
+                                </div>
+                            </div>
+                            <div class="ota-steps">
+                                <div class="step">
+                                    <span class="step-num">1</span>
+                                    <p>Start Local Server</p>
+                                    <button id="startOtaServerBtn" class="btn btn-sm">Start Server</button>
+                                    <span id="otaServerStatus">Stopped</span>
+                                </div>
+                                <div class="step">
+                                    <span class="step-num">2</span>
+                                    <p>Send Update Command</p>
+                                    <button id="sendOtaCommandBtn" class="btn btn-warning" disabled>Update
+                                        Firmware</button>
+                                </div>
+                            </div>
+                            <div class="progress-container">
+                                <div class="progress-bar-bg">
+                                    <div id="otaProgressBar" class="progress-fill" style="width: 0%"></div>
+                                </div>
+                                <span id="otaProgressText">0%</span>
+                            </div>
+                            <div id="otaLogs" class="console-output small"></div>
+                        </div>
+                    </div>
+
+                    <!-- Online Monitor Tab -->
+                    <div id="online-monitor" class="tab-pane">
+                        <div class="device-header-bar">
+                            <span>Monitoring: <strong id="selectedDeviceMonitor">None</strong></span>
+                        </div>
+                        <div class="monitor-container">
+                            <div id="onlineMonitorOutput" class="console-output"></div>
+                            <div class="console-input">
+                                <button id="clearOnlineMonitorBtn" class="btn">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module" src="renderer_main.js"></script>
+</body>
+
+</html>

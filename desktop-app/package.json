@@ -1,0 +1,53 @@
+{
+  "name": "ewater-device-manager",
+  "version": "1.0.0",
+  "description": "eWater Vending Machine Device Configuration Tool",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "keywords": [
+    "ewater",
+    "vending",
+    "esp32",
+    "configuration"
+  ],
+  "author": "eWater Team",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "@serialport/parser-readline": "^13.0.0",
+    "express": "^5.2.1",
+    "mqtt": "^5.14.1",
+    "multer": "^2.0.2",
+    "serialport": "^12.0.0"
+  },
+  "build": {
+    "appId": "com.ewater.devicemanager",
+    "productName": "eWater Device Manager",
+    "files": [
+      "**/*",
+      "!node_modules/**/*",
+      "node_modules/serialport/**/*",
+      "node_modules/@serialport/**/*",
+      "node_modules/mqtt/**/*",
+      "node_modules/express/**/*",
+      "node_modules/multer/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    }
+  }
+}
