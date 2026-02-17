@@ -37,6 +37,8 @@
 #define CMD_ACK                                                                \
   "ACK" // $ACK,seq*CS    - Command acknowledged (seq=0 for heartbeat)
 #define CMD_STATUS "STS" // $STS,state*CS  - Current system state
+#define CMD_CASHCFG                                                            \
+  "CASH" // $CASH,pulseValue,gapMs*CS - Cash acceptor calibration
 
 // ============================================
 // PROTOCOL LIMITS

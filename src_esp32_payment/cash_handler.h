@@ -25,4 +25,7 @@ void clearPendingPayment();
 // Set pulse value (can be updated via UART from main)
 void setCashPulseValue(int value);
 
+// Set pulse gap (ms) (can be updated via UART from main)
+void setCashPulseGapMs(unsigned long gapMs);
+
 #endif

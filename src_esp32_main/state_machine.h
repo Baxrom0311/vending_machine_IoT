@@ -43,6 +43,7 @@ void handlePauseButton();
 void handleSessionTimeout();
 void processFlowSensor();
 void resetSessionTimer();
+void resetFlowCounters();
 void applyConfigStateEffects();
 
 #endif

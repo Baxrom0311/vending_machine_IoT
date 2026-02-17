@@ -188,8 +188,11 @@ void loop() {
   }
 
   // Task 5: Free Water Timer
-  if (config.enableFreeWater && currentState == IDLE && !freeWaterUsed) {
-    if (now >= freeWaterAvailableTime) {
+  if (config.enableFreeWater && currentState == IDLE) {
+    if (freeWaterUsed && now >= freeWaterAvailableTime) {
+      freeWaterUsed = false;
+    }
+    if (!freeWaterUsed && now >= freeWaterAvailableTime) {
       // Display will show free water offer
       // Logic handled in updateDisplay usually
     }

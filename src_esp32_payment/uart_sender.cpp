@@ -1,5 +1,6 @@
 #include "uart_sender.h"
 #include "../shared/uart_protocol.h"
+#include "cash_handler.h"
 #include "hardware.h"
 
 // ============================================
@@ -103,6 +104,7 @@ static bool enqueuePaymentTx(const PaymentTx &tx) {
 // ============================================
 void initUartSender() {
   Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+  Serial2.setTimeout(50);
 
   // Flush any stale data in UART buffer
   while (Serial2.available()) {
@@ -191,6 +193,23 @@ void processUartReceive() {
         mainEspConnected = true;
         Serial.print("📥 Status: ");
         Serial.println(data);
+      } else if (strcmp(cmd, CMD_CASHCFG) == 0) {
+        int value = 0;
+        unsigned long gap = 0;
+        const char *comma = strchr(data, ',');
+        if (comma != nullptr) {
+          value = atoi(data);
+          gap = strtoul(comma + 1, nullptr, 10);
+        } else {
+          value = atoi(data);
+        }
+
+        if (value > 0) {
+          setCashPulseValue(value);
+        }
+        if (gap > 0) {
+          setCashPulseGapMs(gap);
+        }
       }
     }
   }

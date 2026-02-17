@@ -20,6 +20,9 @@ void sendAck(uint32_t seq);
 // Send status update to Payment ESP32
 void sendStatusToPaymentEsp(const char *state, long balance);
 
+// Send cash acceptor calibration to Payment ESP32
+void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs);
+
 // Check if Payment ESP32 is connected
 bool isPaymentEspConnected();
 

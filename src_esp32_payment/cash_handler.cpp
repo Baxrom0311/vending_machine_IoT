@@ -5,20 +5,24 @@
 // VARIABLES
 // ============================================
 static volatile unsigned long pulseCount = 0;
+static volatile uint32_t lastPulseUs = 0;
 static volatile unsigned long lastPulseMs = 0;
 static int cashPulseValue = CASH_PULSE_VALUE;
+static volatile unsigned long cashPulseGapMs = CASH_PULSE_GAP_MS;
 static int pendingPayment = 0;
 
 // ============================================
 // ISR - Interrupt Service Routine
 // ============================================
 void IRAM_ATTR cashPulseISR() {
-  unsigned long now = millis();
+  uint32_t nowUs = micros();
 
   // Hardware debounce
-  if (now - lastPulseMs > CASH_DEBOUNCE_MS) {
+  const uint32_t debounceUs = (uint32_t)CASH_DEBOUNCE_MS * 1000UL;
+  if ((uint32_t)(nowUs - lastPulseUs) > debounceUs) {
     pulseCount++;
-    lastPulseMs = now;
+    lastPulseUs = nowUs;
+    lastPulseMs = nowUs / 1000UL;
   }
 }
 
@@ -50,7 +54,7 @@ void processCashPulses() {
   }
 
   // Wait for pulse gap (all pulses received)
-  if (now - lastMs < CASH_PULSE_GAP_MS) {
+  if (now - lastMs < cashPulseGapMs) {
     return;
   }
 
@@ -87,5 +91,13 @@ void setCashPulseValue(int value) {
     cashPulseValue = value;
     Serial.print("Cash pulse value set to: ");
     Serial.println(value);
+  }
+}
+
+void setCashPulseGapMs(unsigned long gapMs) {
+  if (gapMs >= 20 && gapMs <= 1000) {
+    cashPulseGapMs = gapMs;
+    Serial.print("Cash pulse gap set to: ");
+    Serial.println(gapMs);
   }
 }

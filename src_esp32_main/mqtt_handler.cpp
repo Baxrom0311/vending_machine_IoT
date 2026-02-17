@@ -6,6 +6,7 @@
 #include "relay_control.h"
 #include "sensors.h"
 #include "state_machine.h"
+#include "uart_receiver.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <cstring>
@@ -704,8 +705,7 @@ void processPayment(int amount, const char *source, const char *txnId,
       currentState = DISPENSING;
       sessionStartBalance = balance;
       freeWaterUsed = true; // Don't allow free water again this session
-      flowPulseCount = 0;
-      lastDispensedLiters = 0.0;
+      resetFlowCounters();
       totalDispensedLiters = 0.0;
       setRelay(true);
     } else if (currentState == DISPENSING) {
@@ -970,6 +970,9 @@ void handleConfigUpdate(JsonDocument &doc) {
 
   applyRuntimeConfig();
   applyConfigStateEffects();
+  if (isPaymentEspConnected()) {
+    sendCashConfigToPaymentEsp(config.cashPulseValue, config.cashPulseGapMs);
+  }
 
   if (wifiChanged) {
     setupWiFi();

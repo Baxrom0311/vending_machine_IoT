@@ -47,6 +47,13 @@ void initStateMachine() {
 // ============================================
 void resetSessionTimer() { lastSessionActivity = millis(); }
 
+void resetFlowCounters() {
+  noInterrupts();
+  flowPulseCount = 0;
+  interrupts();
+  lastDispensedLiters = 0.0f;
+}
+
 // ============================================
 // APPLY CONFIG EFFECTS (Runtime)
 // ============================================
@@ -109,8 +116,7 @@ void handleStartButton() {
   case IDLE:
     if (balance > 0) {
       currentState = DISPENSING;
-      flowPulseCount = 0;
-      lastDispensedLiters = 0.0;
+      resetFlowCounters();
       sessionStartBalance = balance;
       setRelay(true);
 
@@ -121,8 +127,7 @@ void handleStartButton() {
                !freeWaterUsed) {
       currentState = FREE_WATER;
       freeWaterDispensed = 0.0;
-      flowPulseCount = 0;
-      lastDispensedLiters = 0.0;
+      resetFlowCounters();
       setRelay(true);
 
       // Free water started
@@ -137,8 +142,7 @@ void handleStartButton() {
   case ACTIVE:
     if (balance > 0) {
       currentState = DISPENSING;
-      flowPulseCount = 0;
-      lastDispensedLiters = 0.0;
+      resetFlowCounters();
       sessionStartBalance = balance;
       setRelay(true);
 
@@ -154,8 +158,7 @@ void handleStartButton() {
       if (config.enableFreeWater && !freeWaterUsed &&
           freeWaterDispensed < config.freeWaterAmount) {
         currentState = FREE_WATER;
-        flowPulseCount = 0;
-        lastDispensedLiters = 0.0;
+        resetFlowCounters();
         setRelay(true);
 
         pausedFromState = IDLE;
@@ -168,8 +171,7 @@ void handleStartButton() {
 
     if (balance > 0) {
       currentState = DISPENSING;
-      flowPulseCount = 0;
-      lastDispensedLiters = 0.0;
+      resetFlowCounters();
       setRelay(true);
 
       pausedFromState = IDLE;
@@ -276,8 +278,7 @@ void processFlowSensor() {
           currentState = DISPENSING;
           sessionStartBalance = balance;
           // Reset flow counters for paid dispensing
-          flowPulseCount = 0;
-          lastDispensedLiters = 0.0;
+          resetFlowCounters();
           totalDispensedLiters = 0.0;
           resetSessionTimer();
           Serial.println("💰 FREE_WATER → DISPENSING (balance available)");

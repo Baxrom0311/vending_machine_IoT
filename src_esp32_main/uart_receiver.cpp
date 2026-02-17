@@ -1,5 +1,6 @@
 #include "uart_receiver.h"
 #include "../shared/uart_protocol.h"
+#include "config.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
 #include "state_machine.h"
@@ -16,6 +17,9 @@ static unsigned long lastMessageMs = 0;
 static bool paymentEspConnected = false;
 static uint32_t recentPaymentSeq[16] = {0};
 static uint8_t recentPaymentSeqIdx = 0;
+static unsigned long lastCashCfgSendMs = 0;
+static int lastCashPulseValue = -1;
+static unsigned long lastCashGapMs = 0;
 
 static bool isDuplicatePaymentSeq(uint32_t seq) {
   if (seq == 0) {
@@ -37,6 +41,7 @@ static bool isDuplicatePaymentSeq(uint32_t seq) {
 // ============================================
 void initUartReceiver() {
   Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+  Serial2.setTimeout(50);
 
   // Flush stale data from UART buffer (from before boot/reflash)
   delay(100); // Wait for any pending bytes
@@ -76,6 +81,38 @@ void sendStatusToPaymentEsp(const char *state, long bal) {
   snprintf(data, sizeof(data), "%s,%ld", state, bal);
   buildMessage(buffer, CMD_STATUS, data);
   Serial2.print(buffer);
+}
+
+void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs) {
+  char buffer[64];
+  char data[32];
+
+  snprintf(data, sizeof(data), "%d,%lu", pulseValue,
+           static_cast<unsigned long>(gapMs));
+  buildMessage(buffer, CMD_CASHCFG, data);
+  Serial2.print(buffer);
+}
+
+static void maybeSendCashConfig() {
+  if (!paymentEspConnected) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  const int pulseValue = config.cashPulseValue;
+  const unsigned long gapMs = config.cashPulseGapMs;
+
+  const bool changed =
+      (pulseValue != lastCashPulseValue) || (gapMs != lastCashGapMs);
+
+  if (!changed && (now - lastCashCfgSendMs) < 30000) {
+    return;
+  }
+
+  sendCashConfigToPaymentEsp(pulseValue, gapMs);
+  lastCashCfgSendMs = now;
+  lastCashPulseValue = pulseValue;
+  lastCashGapMs = gapMs;
 }
 
 // ============================================
@@ -160,6 +197,8 @@ void processUartReceiver() {
   if (millis() - lastMessageMs > CONNECTION_TIMEOUT_MS) {
     paymentEspConnected = false;
   }
+
+  maybeSendCashConfig();
 }
 
 // ============================================
