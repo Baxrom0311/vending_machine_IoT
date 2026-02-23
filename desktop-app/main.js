@@ -2,7 +2,6 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
@@ -211,16 +210,10 @@ function buildCanonicalPayload(type, payload, deviceId) {
         add('ts');
     } else if (t === 'command') {
         add('action');
-        add('pricePerLiter');
         add('threshold');
         add('tdsThreshold');
         add('duration');
         add('reason');
-        add('transaction_id');
-        add('nonce');
-        add('ts');
-    } else if (t === 'ota') {
-        add('firmware_url');
         add('transaction_id');
         add('nonce');
         add('ts');
@@ -411,15 +404,11 @@ ipcMain.handle('flash-firmware', async (event, payload) => {
 console.log('eWater Device Manager started');
 
 // ============================================
-// MQTT & OTA HANDLERS
+// MQTT HANDLERS
 // ============================================
 const mqtt = require('mqtt');
-const express = require('express');
-const http = require('http');
 
 let mqttClient = null;
-let otaServer = null;
-let otaServerPort = 0;
 
 // MQTT Connect
 ipcMain.handle('mqtt-connect', async (event, config) => {
@@ -532,75 +521,4 @@ ipcMain.handle('mqtt-publish', async (event, payload) => {
             }
         });
     });
-});
-
-// OTA Server Start
-ipcMain.handle('start-ota-server', async (event, filePath) => {
-    try {
-        if (!filePath) {
-            return { success: false, message: 'Missing firmware file path' };
-        }
-        if (!fs.existsSync(filePath)) {
-            return { success: false, message: 'Firmware file not found' };
-        }
-
-        if (otaServer) {
-            otaServer.close();
-            otaServer = null;
-            otaServerPort = 0;
-        }
-
-        const fileName = path.basename(filePath);
-        const appServer = express();
-        const encodedName = encodeURIComponent(fileName);
-
-        appServer.get(`/${encodedName}`, (req, res) => {
-            res.sendFile(filePath);
-        });
-
-        appServer.get('/', (req, res) => {
-            res.send(`eWater OTA server running. Download: /${encodedName}`);
-        });
-
-        otaServer = http.createServer(appServer);
-
-        await new Promise((resolve, reject) => {
-            otaServer.once('error', reject);
-            otaServer.listen(0, '0.0.0.0', () => resolve());
-        });
-
-        const address = otaServer.address();
-        otaServerPort = typeof address === 'object' && address ? address.port : 0;
-
-        // Find non-internal IPv4
-        const nets = os.networkInterfaces();
-        let ip = '127.0.0.1';
-        let found = false;
-        for (const name of Object.keys(nets)) {
-            for (const net of nets[name]) {
-                if (net.family === 'IPv4' && !net.internal) {
-                    ip = net.address;
-                    found = true;
-                    break;
-                }
-            }
-            if (found) break;
-        }
-
-        const url = `http://${ip}:${otaServerPort}/${encodedName}`;
-        console.log(`OTA Server started at ${url}`);
-        return { success: true, url };
-    } catch (error) {
-        return { success: false, message: error.message };
-    }
-});
-
-// OTA Server Stop
-ipcMain.handle('stop-ota-server', async () => {
-    if (otaServer) {
-        otaServer.close();
-        otaServer = null;
-        otaServerPort = 0;
-    }
-    return { success: true };
 });

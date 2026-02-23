@@ -7,7 +7,6 @@ export function setupOnline(prefix) {
     let isConnected = false;
     let selectedDevice = null;
     let devices = new Map(); // id -> { lastSeen, firmware, ... }
-    let otaServerUrl = null;
 
     // Elements
     const connectBtn = document.getElementById('mqttConnectBtn');
@@ -20,16 +19,6 @@ export function setupOnline(prefix) {
     const applyExtraConfigBtn = document.getElementById('onlineApplyExtraConfigBtn');
     const selectedDeviceConfigEls = document.querySelectorAll('.selectedDeviceConfigText');
 
-    // OTA
-    const otaFileInput = document.getElementById('otaFileInput');
-    const startServerBtn = document.getElementById('startOtaServerBtn');
-    const sendOtaBtn = document.getElementById('sendOtaCommandBtn');
-    const otaStatus = document.getElementById('otaServerStatus');
-    const otaProgress = document.getElementById('otaProgressBar');
-    const otaProgressText = document.getElementById('otaProgressText');
-    const selectedDeviceOta = document.getElementById('selectedDeviceOta');
-    const otaLogs = 'otaLogs';
-
     // Monitor
     const monitorOutput = 'onlineMonitorOutput';
     const clearMonitorBtn = document.getElementById('clearOnlineMonitorBtn');
@@ -39,14 +28,6 @@ export function setupOnline(prefix) {
     connectBtn.addEventListener('click', toggleConnection);
     applyBasicConfigBtn?.addEventListener('click', () => sendConfig('basic'));
     applyExtraConfigBtn?.addEventListener('click', () => sendConfig('extra'));
-
-    startOtaServerBtn.addEventListener('click', toggleOtaServer);
-    sendOtaBtn.addEventListener('click', triggerOtaUpdate);
-    otaFileInput.addEventListener('change', () => {
-        if (otaFileInput.files.length) {
-            logToElement(otaLogs, 'File selected: ' + otaFileInput.files[0].name, 'response');
-        }
-    });
 
     clearMonitorBtn.addEventListener('click', () => {
         document.getElementById(monitorOutput).innerHTML = '';
@@ -175,20 +156,6 @@ export function setupOnline(prefix) {
 
                 const type = /error|alert/i.test(event) ? 'error' : 'response';
                 logToElement(monitorOutput, display, type);
-
-                // Parse OTA logs
-                const otaText = message || msgStr;
-                if (/^ota/i.test(event) || otaText.includes('Progress')) {
-                    logToElement(otaLogs, `[DEVICE] ${display}`, 'response');
-                    if (otaText.includes('Progress:')) {
-                        const pct = otaText.match(/Progress:\s*(\d+)%/);
-                        if (pct) {
-                            const val = pct[1];
-                            otaProgress.style.width = val + '%';
-                            otaProgressText.textContent = val + '%';
-                        }
-                    }
-                }
             }
         } else if (topic.endsWith('/config/in')) { // Actually device sends to config/out usually? No, device receives on IN.
             // We need to listen to device responses? 
@@ -245,7 +212,6 @@ export function setupOnline(prefix) {
 
         // Update header texts
         selectedDeviceConfigEls.forEach(el => (el.textContent = id));
-        selectedDeviceOta.textContent = id;
         selectedDeviceMonitor.textContent = id;
 
         // Auto-fill and lock Device ID
@@ -370,86 +336,5 @@ export function setupOnline(prefix) {
         });
 
         logToElement(monitorOutput, `${label} configuration sent to ${topic}`, 'command');
-    }
-
-    // OTA FUNCTIONS
-
-    async function toggleOtaServer() {
-        if (otaServerUrl) {
-            // Stop
-            await window.electronAPI.stopOtaServer();
-            otaServerUrl = null;
-            startServerBtn.textContent = 'Start Server';
-            startServerBtn.className = 'btn btn-sm';
-            otaStatus.textContent = 'Stopped';
-            sendOtaBtn.disabled = true;
-            logToElement(otaLogs, 'Server stopped', 'response');
-        } else {
-            // Start
-            if (!otaFileInput.files.length) return alert('Select firmware file first');
-            // We need full path but file input gives File object without full path in browser?
-            // Wait, Electron file input might expose 'path' property on File object?
-            // Yes, Electron adds 'path' to File object.
-
-            const file = otaFileInput.files[0];
-            const path = file.path;
-
-            const res = await window.electronAPI.startOtaServer(path);
-            if (res.success) {
-                otaServerUrl = res.url;
-                startServerBtn.textContent = 'Stop Server';
-                startServerBtn.className = 'btn btn-danger btn-sm';
-                otaStatus.textContent = 'Running at ' + res.url;
-                sendOtaBtn.disabled = false;
-                logToElement(otaLogs, 'Server started: ' + res.url, 'response');
-            } else {
-                logToElement(otaLogs, 'Server start failed: ' + res.message, 'error');
-            }
-        }
-    }
-
-    async function triggerOtaUpdate() {
-        if (!selectedDevice) return alert('Select a device');
-        if (!otaServerUrl) return alert('Start OTA server first');
-
-        if (!confirm(`Update firmware on ${selectedDevice}?`)) return;
-
-        // Get API secret for signing
-        const apiSecret = document.getElementById(p + 'apiSecret')?.value || '';
-
-        const topic = `vending/${selectedDevice}/ota/in`;
-        const payload = {
-            firmware_url: otaServerUrl,
-            nonce: makeNonce('ota'),
-            ts: Date.now()
-        };
-
-        // HIGH FIX: Add HMAC signature if API secret is provided
-        if (apiSecret) {
-            const signRes = await window.electronAPI.signPayload({
-                type: 'ota',
-                deviceId: selectedDevice,
-                payload,
-                secret: apiSecret,
-            });
-            if (!signRes?.success) {
-                alert('Signing failed: ' + (signRes?.message || 'unknown'));
-                return;
-            }
-            payload.sig = signRes.sig;
-        } else {
-            logToElement(otaLogs, 'Warning: API Secret is empty (OTA will be unsigned)', 'error');
-        }
-
-        await window.electronAPI.mqttPublish({
-            topic,
-            message: JSON.stringify(payload)
-        });
-
-        logToElement(otaLogs, `Sent update command to ${topic}`, 'command');
-        logToElement(otaLogs, `URL: ${otaServerUrl}`, 'command');
-
-        otaProgress.style.width = '0%';
-        otaProgressText.textContent = '0%';
     }
 }

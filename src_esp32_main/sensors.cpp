@@ -3,6 +3,7 @@
 #include "config_storage.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
+#include "relay_control.h"
 #include "state_machine.h"
 #include <ArduinoJson.h>
 
@@ -10,13 +11,28 @@
 // GLOBAL VARIABLES
 // ============================================
 int tdsPPM = 0;
+static volatile unsigned long lastAcceptedFlowPulseUs = 0;
+
+// Reject implausibly fast pulses and relay switching noise.
+// For ~450 pulses/L sensors this still allows >20L/min flow safely.
+static constexpr unsigned long FLOW_MIN_PULSE_INTERVAL_US = 2500UL;
+static constexpr unsigned long FLOW_RELAY_NOISE_GUARD_US = 250000UL;
 
 // ============================================
 // INITIALIZATION
 // ============================================
 void initSensors() {
   pinMode(TDS_PIN, INPUT);
+#if (FLOW_SENSOR_PIN >= 34 && FLOW_SENSOR_PIN <= 39)
+  // GPIO34-39 on ESP32 do not support internal pull-up/down.
+  // External 4.7k-10k pull-up to 3.3V is required for stable flow input.
+  pinMode(FLOW_SENSOR_PIN, INPUT);
+  Serial.println("Flow sensor: external pull-up required on this GPIO");
+#else
   pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
+#endif
+
+  lastAcceptedFlowPulseUs = 0;
   attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowSensorISR,
                   RISING);
 }
@@ -24,7 +40,22 @@ void initSensors() {
 // ============================================
 // FLOW SENSOR ISR
 // ============================================
-void IRAM_ATTR flowSensorISR() { flowPulseCount++; }
+void IRAM_ATTR flowSensorISR() {
+  const unsigned long nowUs = micros();
+
+  // Ignore spikes shortly after relay transitions (AC valve EMI).
+  if ((nowUs - getRelayLastChangeUs()) < FLOW_RELAY_NOISE_GUARD_US) {
+    return;
+  }
+
+  // Ignore unrealistically fast pulse bursts.
+  if ((nowUs - lastAcceptedFlowPulseUs) < FLOW_MIN_PULSE_INTERVAL_US) {
+    return;
+  }
+
+  lastAcceptedFlowPulseUs = nowUs;
+  flowPulseCount++;
+}
 
 // ============================================
 // TDS SENSOR

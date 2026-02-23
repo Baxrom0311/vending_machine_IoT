@@ -3,7 +3,15 @@
 
 #include "Arduino.h"
 
-// Mock LCD class (used directly in mqtt_handler identify command)
+#ifndef LCD_COLS
+#define LCD_COLS 20
+#endif
+
+#ifndef LCD_ROWS
+#define LCD_ROWS 4
+#endif
+
+// Mock LCD class for display linkage in tests
 class LiquidCrystal_I2C {
 public:
   LiquidCrystal_I2C() {}
@@ -47,6 +55,7 @@ void displayDispensing();
 void displayFreeWater();
 void displayPaused();
 void showTemporaryMessage(const char *line1, const char *line2);
+void setDisplayNetworkStatus(const char *message);
 void displayStatus();
 void displayError(const char *msg);
 

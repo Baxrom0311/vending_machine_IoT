@@ -28,6 +28,58 @@ static PaymentTx offlineBuffer[OFFLINE_BUFFER_SIZE];
 static int offlineBufferCount = 0;
 static uint32_t nextPaymentSeq = 0; // Will be randomized in initUartSender()
 
+static void applyCashConfig(const char *data) {
+  int value = 0;
+  unsigned long gap = 0;
+  const char *comma = strchr(data, ',');
+  if (comma != nullptr) {
+    value = atoi(data);
+    gap = strtoul(comma + 1, nullptr, 10);
+  } else {
+    value = atoi(data);
+  }
+
+  if (value > 0) {
+    setCashPulseValue(value);
+  }
+  if (gap > 0) {
+    setCashPulseGapMs(gap);
+  }
+}
+
+static bool processIncomingMessage(const char *message, uint32_t expectedAckSeq,
+                                   bool *ackMatched) {
+  char cmd[16], data[32];
+  if (!parseMessage(message, cmd, data)) {
+    return false;
+  }
+
+  if (strcmp(cmd, CMD_ACK) == 0) {
+    const unsigned long ackSeq = strtoul(data, nullptr, 10);
+    lastAckMs = millis();
+    mainEspConnected = true;
+    if (ackMatched != nullptr && ackSeq == expectedAckSeq) {
+      *ackMatched = true;
+    }
+    return true;
+  }
+
+  if (strcmp(cmd, CMD_STATUS) == 0) {
+    lastAckMs = millis();
+    mainEspConnected = true;
+    Serial.print("📥 Status: ");
+    Serial.println(data);
+    return true;
+  }
+
+  if (strcmp(cmd, CMD_CASHCFG) == 0) {
+    applyCashConfig(data);
+    return true;
+  }
+
+  return true;
+}
+
 static bool trySendPaymentTx(const PaymentTx &tx) {
   char buffer[64];
   char data[32];
@@ -54,32 +106,17 @@ static bool trySendPaymentTx(const PaymentTx &tx) {
       char response[64];
       int len = Serial2.readBytesUntil('\n', response, sizeof(response) - 1);
       response[len] = '\0';
-
-      char cmd[16], respData[32];
-      if (!parseMessage(response, cmd, respData)) {
+      if (len <= 0) {
         continue;
       }
 
-      if (strcmp(cmd, CMD_ACK) == 0) {
-        const unsigned long ackSeq = strtoul(respData, nullptr, 10);
-        lastAckMs = millis();
-        mainEspConnected = true;
-
-        if (ackSeq == tx.seq) {
-          Serial.println("✓ ACK received");
-          return true;
-        }
-
-        // ACK for something else (e.g. heartbeat or other message). Keep
-        // waiting.
+      bool ackMatched = false;
+      if (!processIncomingMessage(response, tx.seq, &ackMatched)) {
         continue;
       }
-
-      if (strcmp(cmd, CMD_STATUS) == 0) {
-        lastAckMs = millis();
-        mainEspConnected = true;
-        Serial.print("📥 Status: ");
-        Serial.println(respData);
+      if (ackMatched) {
+        Serial.println("✓ ACK received");
+        return true;
       }
     }
 
@@ -181,37 +218,11 @@ void processUartReceive() {
     char buffer[64];
     int len = Serial2.readBytesUntil('\n', buffer, sizeof(buffer) - 1);
     buffer[len] = '\0';
-
-    char cmd[16], data[32];
-    if (parseMessage(buffer, cmd, data)) {
-      if (strcmp(cmd, CMD_ACK) == 0) {
-        lastAckMs = millis();
-        mainEspConnected = true;
-      } else if (strcmp(cmd, CMD_STATUS) == 0) {
-        // Main ESP sent status update
-        lastAckMs = millis();
-        mainEspConnected = true;
-        Serial.print("📥 Status: ");
-        Serial.println(data);
-      } else if (strcmp(cmd, CMD_CASHCFG) == 0) {
-        int value = 0;
-        unsigned long gap = 0;
-        const char *comma = strchr(data, ',');
-        if (comma != nullptr) {
-          value = atoi(data);
-          gap = strtoul(comma + 1, nullptr, 10);
-        } else {
-          value = atoi(data);
-        }
-
-        if (value > 0) {
-          setCashPulseValue(value);
-        }
-        if (gap > 0) {
-          setCashPulseGapMs(gap);
-        }
-      }
+    if (len <= 0) {
+      continue;
     }
+
+    processIncomingMessage(buffer, 0, nullptr);
   }
 
   // Try to flush offline buffer if connected

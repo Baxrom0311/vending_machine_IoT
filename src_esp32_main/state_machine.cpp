@@ -24,6 +24,7 @@ bool freeWaterUsed = false;
 unsigned long lastSessionActivity = 0;
 unsigned long freeWaterAvailableTime = 0;
 static SystemState pausedFromState = IDLE;
+static float pendingDispenseCost = 0.0f;
 
 // ============================================
 // INITIALIZATION
@@ -40,6 +41,7 @@ void initStateMachine() {
   lastSessionActivity = millis();
   freeWaterAvailableTime = millis() + config.freeWaterCooldown;
   pausedFromState = IDLE;
+  pendingDispenseCost = 0.0f;
 }
 
 // ============================================
@@ -96,6 +98,7 @@ void handleSessionTimeout() {
   sessionStartBalance = 0.0;
   currentState = IDLE;
   pausedFromState = IDLE;
+  pendingDispenseCost = 0.0f;
 
   setRelay(false); // Close valve
 
@@ -118,6 +121,7 @@ void handleStartButton() {
       currentState = DISPENSING;
       resetFlowCounters();
       sessionStartBalance = balance;
+      pendingDispenseCost = 0.0f;
       setRelay(true);
 
       // Dispense started
@@ -144,6 +148,7 @@ void handleStartButton() {
       currentState = DISPENSING;
       resetFlowCounters();
       sessionStartBalance = balance;
+      pendingDispenseCost = 0.0f;
       setRelay(true);
 
       // Dispense started
@@ -172,6 +177,7 @@ void handleStartButton() {
     if (balance > 0) {
       currentState = DISPENSING;
       resetFlowCounters();
+      pendingDispenseCost = 0.0f;
       setRelay(true);
 
       pausedFromState = IDLE;
@@ -180,6 +186,12 @@ void handleStartButton() {
     } else {
       showTemporaryMessage("PUL KIRITING", "Yoki kuting...");
     }
+    break;
+
+  case DISPENSING:
+  case FREE_WATER:
+    // START is intentionally ignored while water is already running.
+    showTemporaryMessage("PAUSE=STOP", "");
     break;
 
   default:
@@ -245,8 +257,10 @@ void processFlowSensor() {
     lastSessionActivity = millis();
 
     if (currentState == DISPENSING) {
-      // Deduct balance - FIX: Check BEFORE subtraction to prevent underflow
-      int cost = (int)(litersDiff * config.pricePerLiter);
+      // Fractional billing accumulator to avoid underbilling from int truncation.
+      pendingDispenseCost += litersDiff * static_cast<float>(config.pricePerLiter);
+      int cost = static_cast<int>(pendingDispenseCost);
+      pendingDispenseCost -= static_cast<float>(cost);
 
       // FIX: Always update totalDispensedLiters first
       totalDispensedLiters += litersDiff;
@@ -255,6 +269,7 @@ void processFlowSensor() {
         // Balance depleted - FIX: Go to IDLE, not ACTIVE
         balance = 0;
         currentState = IDLE;
+        pendingDispenseCost = 0.0f;
         setRelay(false);
         resetSessionTimer(); // Prevent stale lastSessionActivity
 
@@ -280,6 +295,7 @@ void processFlowSensor() {
           // Reset flow counters for paid dispensing
           resetFlowCounters();
           totalDispensedLiters = 0.0;
+          pendingDispenseCost = 0.0f;
           resetSessionTimer();
           Serial.println("💰 FREE_WATER → DISPENSING (balance available)");
           // Relay stays ON - water continues

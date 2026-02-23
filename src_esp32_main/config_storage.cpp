@@ -25,8 +25,8 @@ static const unsigned long CONFIG_SAVE_DEBOUNCE_MS = 2000;
 // ============================================
 void loadDefaultConfig() {
   // WiFi (empty by default - will be configured via serial/app)
-  strcpy(deviceConfig.wifi_ssid, "");
-  strcpy(deviceConfig.wifi_password, "");
+  strcpy(deviceConfig.wifi_ssid, "+998935580311");
+  strcpy(deviceConfig.wifi_password, "Baxrom0311");
 
   // MQTT
   strcpy(deviceConfig.mqtt_broker,
@@ -49,10 +49,9 @@ void loadDefaultConfig() {
   deviceConfig.tdsTemperatureC = 25.0;
   deviceConfig.tdsCalibrationFactor = 0.5;
   deviceConfig.enableFreeWater = true;
-  deviceConfig.relayActiveHigh =
-      true; // Relay polarity (Active HIGH for modules)
-  deviceConfig.cashPulseValue = 1000;
-  deviceConfig.cashPulseGapMs = 120;
+  deviceConfig.relayActiveHigh = true; // Relay polarity (Active HIGH for modules)
+  deviceConfig.cashPulseValue = 500;
+  deviceConfig.cashPulseGapMs = 600;
 
   // Intervals
   deviceConfig.paymentCheckInterval = 2000;
@@ -69,7 +68,7 @@ void loadDefaultConfig() {
   strcpy(deviceConfig.groupId, ""); // Empty by default (no group)
 
   // Flags
-  deviceConfig.configVersion = 1;
+  deviceConfig.configVersion = 2;
   deviceConfig.configured = false;
 }
 
@@ -143,8 +142,8 @@ void loadConfigFromStorage() {
   deviceConfig.enableFreeWater = preferences.getBool("enable_free", true);
   // Hardware policy: relay is fixed Active-HIGH.
   deviceConfig.relayActiveHigh = true;
-  deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 1000);
-  deviceConfig.cashPulseGapMs = preferences.getULong("cash_gap", 120);
+  deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 500);
+  deviceConfig.cashPulseGapMs = preferences.getULong("cash_gap", 600);
 
   // Intervals
   deviceConfig.paymentCheckInterval =

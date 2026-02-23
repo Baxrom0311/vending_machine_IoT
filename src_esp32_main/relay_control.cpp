@@ -10,11 +10,13 @@
 static int relayOnLevel() { return HIGH; }
 
 static int relayOffLevel() { return LOW; }
+static volatile unsigned long relayLastChangeUs = 0;
 
 void setRelay(bool on) {
   config.relayActiveHigh = true; // keep runtime config aligned with HW policy
   int level = on ? relayOnLevel() : relayOffLevel();
   digitalWrite(RELAY_PIN, level);
+  relayLastChangeUs = micros();
 
   DEBUG_PRINT("RELAY CMD: ");
   DEBUG_PRINT(on ? "ON" : "OFF");
@@ -26,3 +28,5 @@ void setRelay(bool on) {
 }
 
 bool isRelayOn() { return digitalRead(RELAY_PIN) == relayOnLevel(); }
+
+unsigned long IRAM_ATTR getRelayLastChangeUs() { return relayLastChangeUs; }

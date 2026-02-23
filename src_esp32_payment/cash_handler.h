@@ -6,9 +6,19 @@
 // ============================================
 // CONFIGURATION
 // ============================================
-#define CASH_PULSE_VALUE 1000 // So'm per pulse (default)
-#define CASH_PULSE_GAP_MS 200 // Minimum gap between pulse groups
-#define CASH_DEBOUNCE_MS 40   // Debounce time
+#define CASH_PULSE_VALUE 500 // So'm per pulse (default)
+#define CASH_PULSE_GAP_MS 600 // Minimum gap between pulse groups
+
+// Pulse width filtering (noise protection)
+#define CASH_MIN_PULSE_MS 10  // Ignore very short spikes
+#define CASH_MAX_PULSE_MS 300 // Ignore abnormally long/stuck pulses
+
+// Pulse active level:
+// - LOW: most bill acceptors pull line to GND during pulse
+// - HIGH: set this if your optocoupler inverts the signal
+// - CASH_ACTIVE_LEVEL_AUTO: derive active level from idle pin state at boot
+#define CASH_ACTIVE_LEVEL_AUTO -1
+#define CASH_ACTIVE_LEVEL CASH_ACTIVE_LEVEL_AUTO
 
 // ============================================
 // FUNCTIONS

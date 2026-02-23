@@ -14,7 +14,7 @@ The **Device Manager** is a cross-platform (Windows/Mac/Linux) tool to configure
 
 In the left sidebar choose **Target Controller**:
 
-- **Main ESP32 (WiFi/MQTT)**: Serial config + firmware flash + serial monitor + **Online Setup (MQTT/OTA)**.
+- **Main ESP32 (WiFi/MQTT)**: Serial config + firmware flash + serial monitor + **Online Setup (MQTT)**.
 - **Payment ESP32 (Cash Only)**: **Firmware flash + Serial monitor only** (no configuration commands).
 
 ## 📦 Installation
@@ -66,10 +66,6 @@ In the left sidebar choose **Target Controller**:
     - If the device has `Require Signed MQTT` enabled, enter the **same API Secret** in the form so the app can sign messages.
     - The app automatically includes `ts` + `nonce` for replay protection.
     - Network fields (WiFi/MQTT broker/auth) are applied only if the device allows remote network config.
-5.  **OTA Update**: 
-    - Start the local OTA Server (hosts firmware file).
-    - Select device and click "Send OTA Command".
-
 ---
 
 ## 🔧 Troubleshooting
@@ -78,4 +74,3 @@ In the left sidebar choose **Target Controller**:
 | :--- | :--- |
 | **"Serial Port Busy"** | Close other apps (Arduino IDE, Serial Monitor) using the port. |
 | **"MQTT Timeout"** | Check internet connection and Broker IP/Port. Firewall? |
-| **"OTA Failed"** | Ensure computer and ESP32 are on the same network (unless public IP used). |

@@ -2,7 +2,7 @@
 
 This guide covers building and flashing **both** firmwares:
 
-* **ESP32 #2 — Main Controller** (`esp32_main`): WiFi/MQTT, display, relay, sensors, OTA
+* **ESP32 #2 — Main Controller** (`esp32_main`): WiFi/MQTT, display, relay, sensors
 * **ESP32 #1 — Payment Controller** (`esp32_payment`): cash acceptor pulses, UART sender
 
 ---
@@ -82,22 +82,3 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 --before default_reset
    - Start dispensing → pulses reduce balance and total liters increase.
 4. **MQTT**
    - Main publishes `vending/<DEVICE_ID>/heartbeat`.
-
----
-
-## 5. OTA Updates (Main Controller only)
-
-Only **Main** firmware supports OTA (Payment ESP has no WiFi).
-
-Topic: `vending/<DEVICE_ID>/ota/in`
-
-```json
-{
-  "firmware_url": "http://your-server.com/updates/v2.4.0-main.bin",
-  "nonce": "ota_001",
-  "ts": 1700000000,
-  "sig": "<HMAC_SHA256_HEX>"
-}
-```
-
-Monitor progress on `vending/<DEVICE_ID>/log/out`. The device reboots on success.

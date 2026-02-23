@@ -13,7 +13,7 @@
 | Component | Macro | GPIO | Notes |
 | :--- | :--- | :--- | :--- |
 | Relay (Valve) | `RELAY_PIN` | 18 | Output |
-| Flow Sensor | `FLOW_SENSOR_PIN` | 35 | Input (Interrupt) |
+| Flow Sensor | `FLOW_SENSOR_PIN` | 32 | Input (Interrupt) |
 | TDS Sensor | `TDS_PIN` | 33 | Analog |
 | LCD (I2C) SDA | `I2C_SDA_PIN` | 21 | I2C |
 | LCD (I2C) SCL | `I2C_SCL_PIN` | 22 | I2C |
@@ -92,24 +92,6 @@ sequenceDiagram
     MainESP->>MainESP: Apply payment once (dedupe by seq)
 ```
 
-#### 2. OTA Update Process
-```mermaid
-sequenceDiagram
-    participant Admin
-    participant Cloud
-    participant Device
-    participant FileServer
-    
-    Admin->>Cloud: Upload Firmware
-    Cloud->>Device: MQTT /ota/in {url, sig}
-    Device->>Device: Verify Signature
-    Device->>FileServer: HTTP GET firmware.bin
-    FileServer-->>Device: Stream Data
-    Device->>Device: Write to Flash
-    Device->>Device: Validate & Reboot
-    Device-->>Cloud: MQTT /log/out (Success)
-```
-
 ### States
 1.  **IDLE**: Waiting for user. Screen shows "Welcome". Low power mode possible.
 2.  **ACTIVE**: User has paid (Balance > 0). Ready to dispense.
@@ -124,5 +106,5 @@ sequenceDiagram
 1.  **Sensors**: `Flow` and `Cash` triggers interrupts -> Updates volatile counters.
 2.  **Loop**: Main loop checks counters -> Updates `Balance` & `Volume`.
 3.  **Display**: `DisplayTask` (FreeRTOS) updates LCD every 100ms.
-4.  **Network**: `MQTT Loop` publishes changes to Cloud asynchronously.
-5.  **Config**: Changes saved to `NVS` (Preferences) on commit.
+4.  **Network**: `MQTT Loop` publishes changes to Cloud asynchronously; inbound MQTT is payment-only in current profile.
+5.  **Config**: Changes saved to `NVS` (Preferences) on commit (remote MQTT config disabled by default).

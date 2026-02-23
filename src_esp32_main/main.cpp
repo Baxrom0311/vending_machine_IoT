@@ -27,7 +27,6 @@
 #include "display.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
-#include "ota_handler.h" // OTA firmware updates
 #include "relay_control.h"
 #include "sensors.h"
 #include "serial_config.h"
@@ -36,6 +35,7 @@
 #include <ArduinoJson.h>   // Required for heartbeat
 #include <WiFi.h>          // For heartbeat WiFi.localIP() and WiFi.RSSI()
 #include <cstdio>
+#include <esp_system.h>
 #include <esp_task_wdt.h> // Hardware Watchdog Timer
 
 // ============================================
@@ -53,6 +53,31 @@ extern bool freeWaterUsed;
 // Constants
 const int WATCHDOG_TIMEOUT_SECONDS = 30;
 
+static const char *resetReasonToString(esp_reset_reason_t reason) {
+  switch (reason) {
+  case ESP_RST_POWERON:
+    return "POWERON";
+  case ESP_RST_SW:
+    return "SW";
+  case ESP_RST_PANIC:
+    return "PANIC";
+  case ESP_RST_INT_WDT:
+    return "INT_WDT";
+  case ESP_RST_TASK_WDT:
+    return "TASK_WDT";
+  case ESP_RST_WDT:
+    return "WDT";
+  case ESP_RST_BROWNOUT:
+    return "BROWNOUT";
+  case ESP_RST_DEEPSLEEP:
+    return "DEEPSLEEP";
+  case ESP_RST_SDIO:
+    return "SDIO";
+  default:
+    return "UNKNOWN";
+  }
+}
+
 // ============================================
 // SETUP
 // ============================================
@@ -61,6 +86,8 @@ void setup() {
   delay(100); // Wait for serial
 
   DEBUG_PRINTLN("\n\n=== VENDING MACHINE STARTING ===");
+  Serial.print("Reset reason: ");
+  Serial.println(resetReasonToString(esp_reset_reason()));
 
   // ============================================
   // HARDWARE WATCHDOG TIMER
@@ -107,7 +134,6 @@ void setup() {
   if (configured) {
     setupWiFi();
     setupMQTT();
-    setupOTA(); // OTA firmware updates
   }
 
   DEBUG_PRINTLN("=== SYSTEM READY ===\n");
@@ -152,11 +178,6 @@ void loop() {
   // Process network config apply/rollback
   if (isConfigured()) {
     processNetworkApply();
-  }
-
-  // OTA firmware updates
-  if (isConfigured() && WiFi.status() == WL_CONNECTED) {
-    handleOTA();
   }
 
   // Task 1: UART Payment Check (from ESP32 #1)
@@ -217,25 +238,41 @@ void loop() {
     publishMQTT(TOPIC_HEARTBEAT, hbStr.c_str());
   }
 
-  // Task 7: Button Handling (debounced)
-  static unsigned long lastStartPress = 0;
-  static unsigned long lastPausePress = 0;
-  const unsigned long DEBOUNCE = 200;
+  // Task 7: Button Handling (edge-based debounce)
+  const unsigned long DEBOUNCE_MS = 50;
+  static int startLastRaw = HIGH;
+  static int startStable = HIGH;
+  static unsigned long startLastChangeMs = 0;
+  static int pauseLastRaw = HIGH;
+  static int pauseStable = HIGH;
+  static unsigned long pauseLastChangeMs = 0;
 
-  if (digitalRead(START_BUTTON_PIN) == LOW &&
-      (now - lastStartPress >= DEBOUNCE)) {
-    lastStartPress = now;
-    Serial.print("▶️ START pressed! State=");
-    Serial.println(currentState);
-    handleStartButton();
+  const int startRaw = digitalRead(START_BUTTON_PIN);
+  if (startRaw != startLastRaw) {
+    startLastRaw = startRaw;
+    startLastChangeMs = now;
+  }
+  if ((now - startLastChangeMs) >= DEBOUNCE_MS && startStable != startLastRaw) {
+    startStable = startLastRaw;
+    if (startStable == LOW) {
+      Serial.print("▶️ START pressed! State=");
+      Serial.println(currentState);
+      handleStartButton();
+    }
   }
 
-  if (digitalRead(PAUSE_BUTTON_PIN) == LOW &&
-      (now - lastPausePress >= DEBOUNCE)) {
-    lastPausePress = now;
-    Serial.print("⏸️ PAUSE pressed! State=");
-    Serial.println(currentState);
-    handlePauseButton();
+  const int pauseRaw = digitalRead(PAUSE_BUTTON_PIN);
+  if (pauseRaw != pauseLastRaw) {
+    pauseLastRaw = pauseRaw;
+    pauseLastChangeMs = now;
+  }
+  if ((now - pauseLastChangeMs) >= DEBOUNCE_MS && pauseStable != pauseLastRaw) {
+    pauseStable = pauseLastRaw;
+    if (pauseStable == LOW) {
+      Serial.print("⏸️ PAUSE pressed! State=");
+      Serial.println(currentState);
+      handlePauseButton();
+    }
   }
 
   // Task 8: Flow Sensor Processing

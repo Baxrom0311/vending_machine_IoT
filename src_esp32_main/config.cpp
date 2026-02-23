@@ -18,7 +18,6 @@ char TOPIC_CONFIG_IN[64];
 char TOPIC_LOG_OUT[64];
 char TOPIC_TDS_OUT[64];
 char TOPIC_HEARTBEAT[64];
-char TOPIC_OTA_IN[64]; // OTA firmware update
 char TOPIC_TELEMETRY[64];
 char TOPIC_ALERTS[64];
 char TOPIC_DIAGNOSTICS[64];
@@ -44,13 +43,7 @@ static unsigned long wifiStartMs = 0;
 static unsigned long wifiRetryMs = 0;
 
 static void printWiFiStatus(const char *message) {
-  lcd.setCursor(0, 1);
-  lcd.print("WiFi: ");
-  lcd.print(message);
-  // Clear rest of line
-  for (int i = strlen("WiFi: ") + strlen(message); i < LCD_COLS; i++) {
-    lcd.print(' ');
-  }
+  setDisplayNetworkStatus(message);
 }
 
 static void startWiFiConnect() {
@@ -167,7 +160,6 @@ void generateMQTTTopics() {
            deviceId);
   snprintf(TOPIC_HEARTBEAT, sizeof(TOPIC_HEARTBEAT), "vending/%s/heartbeat",
            deviceId);
-  snprintf(TOPIC_OTA_IN, sizeof(TOPIC_OTA_IN), "vending/%s/ota/in", deviceId);
   snprintf(TOPIC_TELEMETRY, sizeof(TOPIC_TELEMETRY), "vending/%s/telemetry",
            deviceId);
   snprintf(TOPIC_ALERTS, sizeof(TOPIC_ALERTS), "vending/%s/alerts", deviceId);

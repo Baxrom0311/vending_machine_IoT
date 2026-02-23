@@ -20,6 +20,9 @@ static uint8_t recentPaymentSeqIdx = 0;
 static unsigned long lastCashCfgSendMs = 0;
 static int lastCashPulseValue = -1;
 static unsigned long lastCashGapMs = 0;
+static char rxFrame[UART_MSG_BUFFER_SIZE] = {0};
+static uint8_t rxFrameLen = 0;
+static bool rxInFrame = false;
 
 static bool isDuplicatePaymentSeq(uint32_t seq) {
   if (seq == 0) {
@@ -40,6 +43,7 @@ static bool isDuplicatePaymentSeq(uint32_t seq) {
 // INITIALIZATION
 // ============================================
 void initUartReceiver() {
+  pinMode(UART_RX_PIN, INPUT_PULLUP); // Helps when wire is disconnected/floating
   Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
   Serial2.setTimeout(50);
 
@@ -52,6 +56,8 @@ void initUartReceiver() {
   // Clear duplicate tracking array
   memset(recentPaymentSeq, 0, sizeof(recentPaymentSeq));
   recentPaymentSeqIdx = 0;
+  rxFrameLen = 0;
+  rxInFrame = false;
 
   Serial.print("✓ UART Receiver initialized (RX:");
   Serial.print(UART_RX_PIN);
@@ -120,27 +126,42 @@ static void maybeSendCashConfig() {
 // ============================================
 void processUartReceiver() {
   while (Serial2.available()) {
-    char buffer[64];
-    int len = Serial2.readBytesUntil('\n', buffer, sizeof(buffer) - 1);
-    buffer[len] = '\0';
+    const char ch = static_cast<char>(Serial2.read());
 
-    // DEBUG: Print raw received data
-    if (len > 0) {
-      Serial.print("📩 Rx RAW [");
-      Serial.print(len);
-      Serial.print("]: ");
-      Serial.println(buffer);
+    // Frame sync: accept only "$...\\n" packets, drop all other noise bytes.
+    if (!rxInFrame) {
+      if (ch == '$') {
+        rxInFrame = true;
+        rxFrameLen = 0;
+        rxFrame[rxFrameLen++] = ch;
+      }
+      continue;
     }
 
+    if (ch == '\r') {
+      continue;
+    }
+
+    if (rxFrameLen >= (UART_MSG_BUFFER_SIZE - 1)) {
+      // Overflow/no newline: drop corrupted frame and wait for next '$'
+      rxInFrame = false;
+      rxFrameLen = 0;
+      continue;
+    }
+
+    rxFrame[rxFrameLen++] = ch;
+
+    if (ch != '\n') {
+      continue;
+    }
+
+    rxFrame[rxFrameLen - 1] = '\0'; // strip newline
+    rxInFrame = false;
+
     char cmd[16], data[32];
-    if (parseMessage(buffer, cmd, data)) {
+    if (parseMessage(rxFrame, cmd, data)) {
       lastMessageMs = millis();
       paymentEspConnected = true;
-
-      Serial.print("📋 Parsed CMD=");
-      Serial.print(cmd);
-      Serial.print(" DATA=");
-      Serial.println(data);
 
       if (strcmp(cmd, CMD_PAYMENT) == 0) {
         // Payment received from Payment ESP32
@@ -187,10 +208,9 @@ void processUartReceiver() {
       } else if (strcmp(cmd, CMD_HEARTBEAT) == 0) {
         sendAck(0);
       }
-    } else if (len > 0) {
-      Serial.print("❌ Parse FAILED for: ");
-      Serial.println(buffer);
     }
+
+    rxFrameLen = 0;
   }
 
   // Check connection timeout

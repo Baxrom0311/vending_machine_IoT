@@ -2,7 +2,6 @@
 #include "config.h"
 #include "config_storage.h"
 #include "display.h"
-#include "ota_handler.h"
 #include "relay_control.h"
 #include "sensors.h"
 #include "state_machine.h"
@@ -10,7 +9,6 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <cstring>
-#include <esp_task_wdt.h>
 #include <mbedtls/md.h>
 
 // ============================================
@@ -25,6 +23,11 @@ static bool pendingMqttApply = false;
 static unsigned long networkApplyStartMs = 0;
 static DeviceConfig prevNetworkConfig;
 static const unsigned long networkApplyTimeoutMs = 30000;
+// Minimal inbound MQTT profile:
+// - Keep payment topic enabled
+// - Disable remote config/fleet control by default
+static const bool kMqttInboundConfigEnabled = false;
+static const bool kMqttInboundFleetEnabled = false;
 
 static const int RECENT_TXN_CACHE = 8;
 static String recentTxnIds[RECENT_TXN_CACHE];
@@ -37,7 +40,7 @@ void setupMQTT() {
   mqttClient.setServer(deviceConfig.mqtt_broker, deviceConfig.mqtt_port);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(
-      2048); // Increased from 1024 for large signed messages
+      512); // Payment-only inbound profile does not require large config payloads
   mqttClient.setKeepAlive(60);
   mqttClient.setSocketTimeout(30);
 
@@ -89,22 +92,26 @@ void reconnectMQTT() {
     Serial.println("MQTT Connected!");
     failedAttempts = 0; // Reset counter on success
 
-    // Subscribe to topics
+    // Subscribe to topics (minimal inbound profile)
     mqttClient.subscribe(TOPIC_PAYMENT_IN);
-    mqttClient.subscribe(TOPIC_CONFIG_IN);
-    mqttClient.subscribe(TOPIC_OTA_IN);
 
-    // Subscribe to broadcast topics (all devices)
-    mqttClient.subscribe(TOPIC_BROADCAST_CONFIG);
-    mqttClient.subscribe(TOPIC_BROADCAST_COMMAND);
-
-    // Subscribe to group topics (if groupId is set)
-    if (strlen(deviceConfig.groupId) > 0) {
-      mqttClient.subscribe(TOPIC_GROUP_CONFIG);
-      mqttClient.subscribe(TOPIC_GROUP_COMMAND);
+    if (kMqttInboundConfigEnabled) {
+      mqttClient.subscribe(TOPIC_CONFIG_IN);
     }
 
-    Serial.println("Subscribed to topics");
+    if (kMqttInboundFleetEnabled) {
+      // Subscribe to broadcast topics (all devices)
+      mqttClient.subscribe(TOPIC_BROADCAST_CONFIG);
+      mqttClient.subscribe(TOPIC_BROADCAST_COMMAND);
+
+      // Subscribe to group topics (if groupId is set)
+      if (strlen(deviceConfig.groupId) > 0) {
+        mqttClient.subscribe(TOPIC_GROUP_CONFIG);
+        mqttClient.subscribe(TOPIC_GROUP_COMMAND);
+      }
+    }
+
+    Serial.println("Subscribed to MQTT inbound profile");
 
     // Publish online status
     publishLog("MQTT", "Connected");
@@ -299,33 +306,12 @@ static String canonicalCommand(const JsonDocument &doc) {
   JsonDocument canonical;
   if (!doc["action"].isNull())
     canonical["action"] = doc["action"];
-  if (!doc["pricePerLiter"].isNull())
-    canonical["pricePerLiter"] = doc["pricePerLiter"];
   if (!doc["threshold"].isNull())
     canonical["threshold"] = doc["threshold"];
   if (!doc["tdsThreshold"].isNull())
     canonical["tdsThreshold"] = doc["tdsThreshold"];
-  if (!doc["duration"].isNull())
-    canonical["duration"] = doc["duration"];
   if (!doc["reason"].isNull())
     canonical["reason"] = doc["reason"];
-  if (!doc["transaction_id"].isNull())
-    canonical["transaction_id"] = doc["transaction_id"];
-  if (!doc["nonce"].isNull())
-    canonical["nonce"] = doc["nonce"];
-  if (!doc["ts"].isNull())
-    canonical["ts"] = doc["ts"];
-  canonical["device_id"] = deviceConfig.device_id;
-
-  String out;
-  serializeJson(canonical, out);
-  return out;
-}
-
-static String canonicalOta(const JsonDocument &doc) {
-  JsonDocument canonical;
-  if (!doc["firmware_url"].isNull())
-    canonical["firmware_url"] = doc["firmware_url"];
   if (!doc["transaction_id"].isNull())
     canonical["transaction_id"] = doc["transaction_id"];
   if (!doc["nonce"].isNull())
@@ -524,6 +510,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
                    txnId.length() ? txnId.c_str() : nullptr,
                    userId.length() ? userId.c_str() : nullptr);
   } else if (topicStr == TOPIC_CONFIG_IN) {
+    if (!kMqttInboundConfigEnabled) {
+      Serial.println("Config topic ignored (disabled)");
+      return;
+    }
     Serial.println("Config update received");
     String canonical = canonicalConfig(doc);
     if (!verifySignedMessage(doc, canonical)) {
@@ -537,6 +527,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     handleConfigUpdate(doc);
   } else if (topicStr == TOPIC_BROADCAST_CONFIG ||
              topicStr == TOPIC_GROUP_CONFIG) {
+    if (!kMqttInboundFleetEnabled) {
+      Serial.println("Fleet config topic ignored (disabled)");
+      return;
+    }
     Serial.println("Broadcast/Group config received");
 
     String canonical = canonicalConfig(doc);
@@ -576,6 +570,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   // Handle Broadcast/Group Commands
   else if (topicStr == TOPIC_BROADCAST_COMMAND ||
            topicStr == TOPIC_GROUP_COMMAND) {
+    if (!kMqttInboundFleetEnabled) {
+      Serial.println("Fleet command topic ignored (disabled)");
+      return;
+    }
     Serial.println("Broadcast/Group command received");
 
     // CRITICAL FIX: Verify signature for commands (must include `action`)
@@ -591,45 +589,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 
     String action = doc["action"] | "";
 
-    if (action == "updatePrice" && !doc["pricePerLiter"].isNull()) {
-      deviceConfig.pricePerLiter = doc["pricePerLiter"];
-      saveConfigToStorage();
-      applyRuntimeConfig();
-      publishLog("FLEET", "Price updated via broadcast");
-    } else if (action == "updateTdsThreshold" && !doc["threshold"].isNull()) {
+    if (action == "updateTdsThreshold" && !doc["threshold"].isNull()) {
       deviceConfig.tdsThreshold = doc["threshold"];
       saveConfigToStorage();
       publishLog("FLEET", "TDS threshold updated");
-    } else if (action == "identify") {
-      // Blink display or LED for physical identification
-      int duration = doc["duration"] | 10;
-
-      // FIX: Limit duration to prevent watchdog timeout (max 10 iterations = 12
-      // seconds)
-      if (duration > 10) {
-        duration = 10;
-      }
-
-      publishLog("FLEET", "Identify command received");
-
-      // Visual identification: blink LCD backlight
-      for (int i = 0; i < duration; i++) {
-        esp_task_wdt_reset(); // FIX: Reset watchdog during long operation
-
-        lcd.noBacklight();
-        delay(200);
-        lcd.backlight();
-        delay(200);
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(">>> IDENTIFY <<<");
-        lcd.setCursor(0, 1);
-        lcd.print("Device found!");
-        delay(600);
-      }
-
-      // Restore normal display after identify
-      displayIdle();
     } else if (action == "emergencyShutdown") {
       String reason = doc["reason"] | "Emergency";
       String msg = "EMERGENCY SHUTDOWN: " + reason;
@@ -641,27 +604,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       currentState = IDLE;
       balance = 0;
       publishStatus();
+    } else {
+      publishLog("FLEET", "Unsupported command action");
     }
-  } else if (topicStr == TOPIC_OTA_IN) {
-    Serial.println("OTA update command received");
-
-    // CRITICAL FIX: Verify signature for OTA (include url + ts + nonce)
-    String canonical = canonicalOta(doc);
-    if (!verifySignedMessage(doc, canonical)) {
-      Serial.println("OTA rejected: signature invalid");
-      return;
-    }
-    if (!enforceSignedReplayProtection(doc, "OTA", "ota_nonce_idx",
-                                       "ota_nonce_buf")) {
-      return;
-    }
-
-    if (!doc["firmware_url"].is<String>()) {
-      publishLog("OTA_ERROR", "Missing firmware_url");
-      return;
-    }
-    String firmwareUrl = doc["firmware_url"].as<String>();
-    triggerOTAUpdate(firmwareUrl.c_str());
   }
 }
 
@@ -745,7 +690,6 @@ void handleConfigUpdate(JsonDocument &doc) {
   bool updated = false;
   bool wifiChanged = false;
   bool mqttChanged = false;
-  bool deviceIdChanged = false;
   bool allowNetConfig = deviceConfig.allowRemoteNetworkConfig;
 
   if (allowNetConfig) {
@@ -809,14 +753,6 @@ void handleConfigUpdate(JsonDocument &doc) {
       }
     }
 
-    // Device ID
-    String devId = doc["deviceId"] | doc["device_id"] | "";
-    if (devId.length() > 0 && devId.length() < 32) {
-      copyToBuffer(deviceConfig.device_id, sizeof(deviceConfig.device_id),
-                   devId);
-      deviceIdChanged = true;
-      updated = true;
-    }
   } else {
     // Check for attempted network config when disabled
     if (doc["wifiSsid"].is<const char *>() ||
@@ -827,13 +763,28 @@ void handleConfigUpdate(JsonDocument &doc) {
     }
   }
 
-// Vending settings
-// Helper to check both keys
+  // Remote config hardening:
+  // Allow only operational settings via MQTT.
+  // Calibration/hardware-sensitive fields remain Serial-only.
+  const bool hasRestrictedKeys =
+      !doc["deviceId"].isNull() || !doc["device_id"].isNull() ||
+      !doc["pulsesPerLiter"].isNull() || !doc["pulses_per_liter"].isNull() ||
+      !doc["tdsTemperatureC"].isNull() || !doc["tdsCalibrationFactor"].isNull() ||
+      !doc["relayActiveHigh"].isNull() || !doc["relay_active_high"].isNull() ||
+      !doc["cashPulseValue"].isNull() || !doc["cashPulseGapMs"].isNull() ||
+      !doc["paymentCheckInterval"].isNull() ||
+      !doc["displayUpdateInterval"].isNull() || !doc["tdsCheckInterval"].isNull();
+  if (hasRestrictedKeys) {
+    publishLog("CONFIG", "Restricted fields ignored (serial-only)");
+  }
+
+  // Vending settings
+  // Helper to check both keys
 #define GET_INT(key1, key2) (doc[key1] | doc[key2] | -1)
 #define GET_FLOAT(key1, key2) (doc[key1] | doc[key2] | -1.0f)
 
   int price = GET_INT("pricePerLiter", "price_per_liter");
-  if (price > 0 && price <= 100000) {
+  if (price >= 100 && price <= 100000) {
     deviceConfig.pricePerLiter = price;
     updated = true;
   }
@@ -856,96 +807,28 @@ void handleConfigUpdate(JsonDocument &doc) {
     updated = true;
   }
 
-  float pulses = GET_FLOAT("pulsesPerLiter", "pulses_per_liter");
-  if (pulses > 0) {
-    deviceConfig.pulsesPerLiter = pulses;
-    updated = true;
-  }
-
   int tdsThresh = GET_INT("tdsThreshold", "tds_threshold");
-  if (tdsThresh >= 0) {
+  if (tdsThresh >= 0 && tdsThresh <= 2000) {
     deviceConfig.tdsThreshold = tdsThresh;
     updated = true;
   }
 
-  // ... (Abbreviated for brevity, applying pattern to others)
-  // Reverting to direct checks for remaining fields to ensure correctness
-  // without macro magic complexity
-
-  if (!doc["tdsTemperatureC"].isNull()) {
-    float temp = doc["tdsTemperatureC"].as<float>();
-    if (temp >= 0.0f && temp <= 80.0f) {
-      deviceConfig.tdsTemperatureC = temp;
-      updated = true;
-    }
-  }
-  if (!doc["tdsCalibrationFactor"].isNull()) {
-    float factor = doc["tdsCalibrationFactor"].as<float>();
-    if (factor > 0.0f && factor <= 5.0f) {
-      deviceConfig.tdsCalibrationFactor = factor;
-      updated = true;
-    }
-  }
   if (!doc["enableFreeWater"].isNull()) {
     deviceConfig.enableFreeWater = doc["enableFreeWater"].as<bool>();
     updated = true;
   }
-  if (!doc["relayActiveHigh"].isNull()) {
-    deviceConfig.relayActiveHigh = true;
-    updated = true;
-  }
-  if (!doc["relay_active_high"].isNull()) {
-    deviceConfig.relayActiveHigh = true;
-    updated = true;
-  }
-
-  // Cash
-  if (!doc["cashPulseValue"].isNull()) {
-    int value = doc["cashPulseValue"].as<int>();
-    if (value > 0 && value <= 100000) {
-      deviceConfig.cashPulseValue = value;
-      updated = true;
-    }
-  }
-  if (!doc["cashPulseGapMs"].isNull()) {
-    unsigned long gap = doc["cashPulseGapMs"].as<unsigned long>();
-    if (gap >= 20 && gap <= 1000) {
-      deviceConfig.cashPulseGapMs = gap;
-      updated = true;
-    }
-  }
-
-  // Intervals
-  if (!doc["paymentCheckInterval"].isNull()) {
-    unsigned long interval = doc["paymentCheckInterval"].as<unsigned long>();
-    if (interval >= 200 && interval <= 600000) {
-      deviceConfig.paymentCheckInterval = interval;
-      updated = true;
-    }
-  }
-  if (!doc["displayUpdateInterval"].isNull()) {
-    unsigned long interval = doc["displayUpdateInterval"].as<unsigned long>();
-    if (interval >= 50 && interval <= 10000) {
-      deviceConfig.displayUpdateInterval = interval;
-      updated = true;
-    }
-  }
-  if (!doc["tdsCheckInterval"].isNull()) {
-    unsigned long interval = doc["tdsCheckInterval"].as<unsigned long>();
-    if (interval >= 1000 && interval <= 600000) {
-      deviceConfig.tdsCheckInterval = interval;
-      updated = true;
-    }
-  }
   if (!doc["heartbeatInterval"].isNull()) {
     unsigned long interval = doc["heartbeatInterval"].as<unsigned long>();
-    if (interval >= 1000 && interval <= 3600000) {
+    if (interval >= 5000 && interval <= 3600000) {
       deviceConfig.heartbeatInterval = interval;
       updated = true;
     }
   }
 
   // Power Management Removed
+
+#undef GET_INT
+#undef GET_FLOAT
 
   if (!updated) {
     return;
@@ -977,12 +860,12 @@ void handleConfigUpdate(JsonDocument &doc) {
   if (wifiChanged) {
     setupWiFi();
   }
-  if (mqttChanged || deviceIdChanged) {
+  if (mqttChanged) {
     mqttClient.disconnect();
     mqttClient.setServer(deviceConfig.mqtt_broker, deviceConfig.mqtt_port);
     reconnectMQTT();
   }
-  beginNetworkApply(prevConfig, wifiChanged, mqttChanged || deviceIdChanged);
+  beginNetworkApply(prevConfig, wifiChanged, mqttChanged);
 
   Serial.println("Config updated!");
   publishLog("CONFIG", "Updated from backend");

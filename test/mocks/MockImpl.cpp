@@ -26,6 +26,7 @@ void displayDispensing() {}
 void displayFreeWater() {}
 void displayPaused() {}
 void showTemporaryMessage(const char *line1, const char *line2) {}
+void setDisplayNetworkStatus(const char *message) {}
 void displayStatus() {}
 void displayError(const char *msg) {}
 
@@ -34,9 +35,9 @@ void displayError(const char *msg) {}
 void setRelay(bool on) {}
 bool isRelayOn() { return false; }
 
-// Define OTA Mock
-#include "ota_handler.h"
-void triggerOTAUpdate(const char *url) {}
+// Define UART bridge mocks used by mqtt_handler config sync path
+void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs) {}
+bool isPaymentEspConnected() { return false; }
 
 // Define WDT Mock
 #include "esp_task_wdt.h"

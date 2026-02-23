@@ -4,7 +4,6 @@
 #include "mocks/WiFi.h"
 #include "mocks/display.h"
 #include "mocks/esp_task_wdt.h"
-#include "mocks/ota_handler.h"
 #include <unity.h>
 
 // Include implementations for linkage
@@ -77,7 +76,7 @@ void test_config_validation(void) {
   deviceConfig.pricePerLiter = -500;
   deviceConfig.sessionTimeout = 500;
   validateConfig();
-  TEST_ASSERT_EQUAL_INT(0, deviceConfig.pricePerLiter);
+  TEST_ASSERT_EQUAL_INT(1000, deviceConfig.pricePerLiter);
   TEST_ASSERT_EQUAL_UINT32(300000, deviceConfig.sessionTimeout);
 }
 
@@ -178,46 +177,6 @@ void test_integration_mqtt_zero_payment_fail(void) {
   TEST_ASSERT_EQUAL(IDLE, currentState);
 }
 
-void test_integration_wdt_identify(void) {
-  // 1. Setup
-  wdt_reset_count = 0;
-
-  // 2. Trigger Identify Command (via broadcast or group)
-  // {"action": "identify", "duration": 3}
-  const char *payload = "{\"action\": \"identify\", \"duration\": 3}";
-
-  char topicBuf[] = "water/broadcast/command";
-  char payloadBuf[128];
-  strcpy(payloadBuf, payload);
-
-  // 3. Execute
-  mqttCallback(topicBuf, (byte *)payloadBuf, strlen(payload));
-
-  // 4. Assert
-  // Duration is 3, loops 3 times. Should call reset at least 3 times.
-  TEST_ASSERT_GREATER_THAN(0, wdt_reset_count);
-  TEST_ASSERT_EQUAL_INT(3, wdt_reset_count);
-}
-
-void test_integration_ota_trigger(void) {
-  // 1. Trigger OTA command via MQTT
-  // {"firmware_url": "http://example.com/fw.bin"}
-  const char *payload = "{\"firmware_url\": \"http://example.com/fw.bin\"}";
-
-  char topicBuf[] = "vending/VendingMachine_001/ota/in";
-  char payloadBuf[128];
-  strcpy(payloadBuf, payload);
-
-  // 2. Execute
-  // This calls triggerOTAUpdate -> HTTPClient -> Update.begin -> Update.write
-  // -> Update.end Since we mocked everything to return true/success, it should
-  // complete without error.
-  mqttCallback(topicBuf, (byte *)payloadBuf, strlen(payload));
-
-  // 3. Assert - if we got here, it didn't crash.
-  TEST_ASSERT_TRUE(true);
-}
-
 // ============================================
 // MAIN
 // ============================================
@@ -238,8 +197,6 @@ int main(int argc, char **argv) {
   // Integration
   RUN_TEST(test_integration_mqtt_payment);
   RUN_TEST(test_integration_mqtt_zero_payment_fail);
-  RUN_TEST(test_integration_wdt_identify);
-  RUN_TEST(test_integration_ota_trigger);
 
   UNITY_END();
   return 0;

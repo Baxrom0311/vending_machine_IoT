@@ -30,9 +30,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // MQTT listeners
     onMqttStatus: (callback) => ipcRenderer.on('mqtt-status', (event, data) => callback(data)),
-    onMqttMessage: (callback) => ipcRenderer.on('mqtt-message', (event, data) => callback(data)),
-
-    // OTA operations
-    startOtaServer: (file) => ipcRenderer.invoke('start-ota-server', file),
-    stopOtaServer: () => ipcRenderer.invoke('stop-ota-server')
+    onMqttMessage: (callback) => ipcRenderer.on('mqtt-message', (event, data) => callback(data))
 });

@@ -16,9 +16,9 @@ struct Config {
   float tdsTemperatureC = 25.0;             // TDS compensation temp
   float tdsCalibrationFactor = 0.5;         // TDS calibration multiplier
   bool enableFreeWater = true;              // Feature flag
-  bool relayActiveHigh = true;        // Relay polarity (forced Active HIGH)
-  int cashPulseValue = 1000;          // so'm per pulse
-  unsigned long cashPulseGapMs = 120; // gap to close pulse burst
+  bool relayActiveHigh = false;        // Relay polarity (forced Active HIGH)
+  int cashPulseValue = 500;           // so'm per pulse
+  unsigned long cashPulseGapMs = 600; // gap to close pulse burst
   unsigned long paymentCheckInterval = 2000; // 2s
   unsigned long displayUpdateInterval = 100; // 100ms
   unsigned long tdsCheckInterval = 5000;     // 5s
@@ -35,7 +35,6 @@ extern char TOPIC_CONFIG_IN[64];
 extern char TOPIC_LOG_OUT[64];
 extern char TOPIC_TDS_OUT[64];
 extern char TOPIC_HEARTBEAT[64];
-extern char TOPIC_OTA_IN[64];
 extern char TOPIC_TELEMETRY[64];
 extern char TOPIC_ALERTS[64];
 extern char TOPIC_DIAGNOSTICS[64];

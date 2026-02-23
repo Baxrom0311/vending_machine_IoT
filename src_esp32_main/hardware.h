@@ -21,8 +21,8 @@
 // ============================================
 #define TDS_PIN 33 // Analog TDS sensor (ADC1_CH5)
 #define FLOW_SENSOR_PIN                                                        \
-  35 // Flow sensor pulse (ADC1_CH7, input only)
-     // ⚠️ 5V signal → 3.3V voltage divider kerak!
+  32 // Flow sensor pulse (ADC1_CH4, interrupt capable)
+     // ⚠️ 5V signal bo'lsa, 3.3V ga moslash shart!
 
 // ============================================
 // CONTROLS

@@ -137,7 +137,6 @@
                     <button class="tab-btn" data-tab="online-devices">Devices</button>
                     <button class="tab-btn" data-tab="online-config-basic">Basic Config</button>
                     <button class="tab-btn" data-tab="online-config-extra">Extra Config</button>
-                    <button class="tab-btn" data-tab="online-ota">OTA Update</button>
                     <button class="tab-btn" data-tab="online-monitor">Live Logs</button>
                 </div>
 
@@ -207,43 +206,6 @@
                                 <option value="restart">Restart</option>
                             </select>
                             <button id="onlineApplyExtraConfigBtn" class="btn btn-success">Apply Extra</button>
-                        </div>
-                    </div>
-
-                    <!-- OTA Update Tab -->
-                    <div id="online-ota" class="tab-pane">
-                        <div class="device-header-bar">
-                            <span>Target Device: <strong id="selectedDeviceOta">None</strong></span>
-                        </div>
-                        <div class="card">
-                            <h3>Firmware Update (Over-The-Air)</h3>
-                            <div class="form-group">
-                                <label>Select Firmware File (.bin)</label>
-                                <div class="file-row">
-                                    <input type="file" id="otaFileInput" accept=".bin">
-                                </div>
-                            </div>
-                            <div class="ota-steps">
-                                <div class="step">
-                                    <span class="step-num">1</span>
-                                    <p>Start Local Server</p>
-                                    <button id="startOtaServerBtn" class="btn btn-sm">Start Server</button>
-                                    <span id="otaServerStatus">Stopped</span>
-                                </div>
-                                <div class="step">
-                                    <span class="step-num">2</span>
-                                    <p>Send Update Command</p>
-                                    <button id="sendOtaCommandBtn" class="btn btn-warning" disabled>Update
-                                        Firmware</button>
-                                </div>
-                            </div>
-                            <div class="progress-container">
-                                <div class="progress-bar-bg">
-                                    <div id="otaProgressBar" class="progress-fill" style="width: 0%"></div>
-                                </div>
-                                <span id="otaProgressText">0%</span>
-                            </div>
-                            <div id="otaLogs" class="console-output small"></div>
                         </div>
                     </div>
 

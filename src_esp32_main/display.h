@@ -11,11 +11,11 @@
 #endif
 
 #ifndef LCD_COLS
-#define LCD_COLS 16
+#define LCD_COLS 20
 #endif
 
 #ifndef LCD_ROWS
-#define LCD_ROWS 2
+#define LCD_ROWS 4
 #endif
 
 // ============================================
@@ -34,5 +34,7 @@ void displayDispensing();
 void displayFreeWater();
 void displayPaused();
 void showTemporaryMessage(const char *line1, const char *line2);
+void setDisplayNetworkStatus(const char *message);
+bool isDisplayReady();
 
 #endif

@@ -6,5 +6,6 @@
 // Relay control helpers (respect active-high/active-low config)
 void setRelay(bool on);
 bool isRelayOn();
+unsigned long getRelayLastChangeUs();
 
 #endif

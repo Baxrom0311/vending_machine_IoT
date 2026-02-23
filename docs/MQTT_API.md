@@ -15,11 +15,11 @@ This document provides a comprehensive reference for the MQTT interface used by 
 *   **KeepAlive**: 60 seconds
 
 ### 2. Message Signing (HMAC-SHA256)
-If `requireSignedMessages` is enabled on the device, critical commands (**Payment**, **Config**, **OTA**, **Broadcast**) MUST be signed.
+If `requireSignedMessages` is enabled on the device, critical commands (**Payment**, **Config**, **Broadcast**) MUST be signed.
 
 **Replay Protection (ts/nonce)**
 - **Payment**: require `ts` + `transaction_id` (or `nonce`)
-- **Config / OTA / Broadcast**: require `ts` + `nonce` (or `transaction_id`)
+- **Config / Broadcast**: require `ts` + `nonce` (or `transaction_id`)
 - Device rejects reused IDs to prevent replay attacks.
 
 **Algorithm**:
@@ -48,6 +48,9 @@ final_payload = {
 
 ## 📥 Subscribe Topics (Device Listens)
 
+> Current firmware default (minimal inbound profile): device accepts only `vending/<ID>/payment/in`.
+> `config/in`, `broadcast/*`, and `group/*` inbound control topics are disabled by default.
+
 ### 1. Payment (`vending/<ID>/payment/in`)
 Authorize a dispense operation.
 *   **Payload**:
@@ -63,7 +66,7 @@ Authorize a dispense operation.
     }
     ```
 
-### 2. Configuration (`vending/<ID>/config/in`)
+### 2. Configuration (`vending/<ID>/config/in`) [Disabled by default]
 Update device settings.
 *   **Payload (Partial updates supported)**:
     ```json
@@ -79,20 +82,6 @@ Update device settings.
       "sig": "..."
     }
     ```
-
-### 3. OTA Update (`vending/<ID>/ota/in`)
-Trigger remote firmware update.
-*   **Payload**:
-    ```json
-    {
-      "firmware_url": "http://server.com/fw/v1.0.0.bin", // HTTP only supported
-      "nonce": "ota_001",        // Required if signing (replay protection)
-      "ts": 1700000000000,
-      "sig": "..."
-    }
-    ```
-
----
 
 ## 📤 Publish Topics (Device Sends)
 
@@ -133,7 +122,7 @@ Debug and verification logs.
       "message": "Updated from backend"
     }
     ```
-    Example events: `PAYMENT`, `CONFIG`, `FLEET`, `OTA`, `ERROR`, `ALERT`.
+    Example events: `PAYMENT`, `CONFIG`, `FLEET`, `ERROR`, `ALERT`.
 
 ### 4. Telemetry (`vending/<ID>/telemetry`)
 Periodic telemetry data for analytics.
@@ -151,6 +140,8 @@ Periodic telemetry data for analytics.
 
 ## 📢 Fleet Connectivity (Broadcast & Group)
 
+> Disabled by default in current firmware (minimal inbound profile).
+
 Commands sent to these topics affect multiple devices.
 
 ### 1. Broadcast Config (`vending/broadcast/config`)
@@ -163,8 +154,8 @@ Execute actions on **ALL** devices.
 *   **Payload**:
     ```json
     {
-      "action": "updatePrice",    // Actions: "updatePrice", "updateTdsThreshold", "identify", "emergencyShutdown"
-      "pricePerLiter": 1500,
+      "action": "updateTdsThreshold",    // Actions: "updateTdsThreshold", "emergencyShutdown"
+      "threshold": 150,
       "nonce": "cmd_001",         // Required if signing (replay protection)
       "ts": 1700000000000,        // Required if signing
       "sig": "..."
@@ -205,4 +196,5 @@ Same as Broadcast, but targets only devices with matching `groupId` (e.g., "buil
 | `deviceId` | `string` | Unique Device ID. |
 | `groupId` | `string` | Fleet group id (affects group topics). |
 
-> Note: `requireSignedMessages` and `api_secret` are set via **Serial config** (not via MQTT config update).
+> Note: `requireSignedMessages`, `api_secret`, calibration/hardware fields (`pulsesPerLiter`, `tdsTemperatureC`, `tdsCalibrationFactor`, `relayActiveHigh`, cash/interval tuning) and `deviceId` are Serial-only in current firmware.
+> MQTT config updates are intentionally limited to operational keys.
