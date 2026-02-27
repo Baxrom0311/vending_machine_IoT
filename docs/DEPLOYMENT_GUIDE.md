@@ -81,4 +81,5 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 --before default_reset
 3. **Flow sensor**
    - Start dispensing → pulses reduce balance and total liters increase.
 4. **MQTT**
-   - Main publishes `vending/<DEVICE_ID>/heartbeat`.
+   - Main publishes `vending/<DEVICE_ID>/heartbeat`, `status/out`, `log/out`, `tds/out`.
+   - Current inbound profile accepts `vending/<DEVICE_ID>/payment/in` by default.

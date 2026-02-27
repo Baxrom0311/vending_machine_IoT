@@ -1,6 +1,7 @@
 #include "mqtt_handler.h"
 #include "config.h"
 #include "config_storage.h"
+#include "debug.h"
 #include "display.h"
 #include "relay_control.h"
 #include "sensors.h"
@@ -23,6 +24,7 @@ static bool pendingMqttApply = false;
 static unsigned long networkApplyStartMs = 0;
 static DeviceConfig prevNetworkConfig;
 static const unsigned long networkApplyTimeoutMs = 30000;
+static const uint16_t kMqttSocketTimeoutSec = 8;
 // Minimal inbound MQTT profile:
 // - Keep payment topic enabled
 // - Disable remote config/fleet control by default
@@ -42,7 +44,8 @@ void setupMQTT() {
   mqttClient.setBufferSize(
       512); // Payment-only inbound profile does not require large config payloads
   mqttClient.setKeepAlive(60);
-  mqttClient.setSocketTimeout(30);
+  mqttClient.setSocketTimeout(kMqttSocketTimeoutSec);
+  espClient.setTimeout(kMqttSocketTimeoutSec);
 
   reconnectMQTT();
 }
@@ -75,12 +78,12 @@ void reconnectMQTT() {
   }
   lastAttempt = now;
 
-  Serial.print("Connecting to MQTT (attempt ");
-  Serial.print(failedAttempts + 1);
-  Serial.print("): ");
-  Serial.print(deviceConfig.mqtt_broker);
-  Serial.print(":");
-  Serial.println(deviceConfig.mqtt_port);
+  DEBUG_PRINT("Connecting to MQTT (attempt ");
+  DEBUG_PRINT(failedAttempts + 1);
+  DEBUG_PRINT("): ");
+  DEBUG_PRINT(deviceConfig.mqtt_broker);
+  DEBUG_PRINT(":");
+  DEBUG_PRINTLN(deviceConfig.mqtt_port);
 
   const char *clientId = deviceConfig.device_id;
   const char *username =
@@ -89,7 +92,7 @@ void reconnectMQTT() {
       deviceConfig.mqtt_password[0] ? deviceConfig.mqtt_password : nullptr;
 
   if (mqttClient.connect(clientId, username, password)) {
-    Serial.println("MQTT Connected!");
+    DEBUG_PRINTLN("MQTT Connected!");
     failedAttempts = 0; // Reset counter on success
 
     // Subscribe to topics (minimal inbound profile)
@@ -111,21 +114,21 @@ void reconnectMQTT() {
       }
     }
 
-    Serial.println("Subscribed to MQTT inbound profile");
+    DEBUG_PRINTLN("Subscribed to MQTT inbound profile");
 
     // Publish online status
     publishLog("MQTT", "Connected");
   } else {
     failedAttempts++; // Increment for backoff calculation
     // analytics.incrementMqttReconnects(); // Removed
-    Serial.print("Failed, rc=");
-    Serial.print(mqttClient.state());
-    Serial.print(", next retry in ");
-    Serial.print(
+    DEBUG_PRINT("Failed, rc=");
+    DEBUG_PRINT(mqttClient.state());
+    DEBUG_PRINT(", next retry in ");
+    DEBUG_PRINT(
         backoffDelays[(failedAttempts < maxBackoffIndex) ? failedAttempts
                                                          : maxBackoffIndex] /
         1000);
-    Serial.println(" seconds");
+    DEBUG_PRINTLN(" seconds");
   }
 }
 
@@ -233,62 +236,49 @@ static String canonicalPayment(const JsonDocument &doc) {
 
 static String canonicalConfig(const JsonDocument &doc) {
   JsonDocument canonical;
-  if (!doc["apply"].isNull())
-    canonical["apply"] = doc["apply"];
-  if (!doc["deviceId"].isNull())
-    canonical["deviceId"] = doc["deviceId"];
-  if (!doc["wifiSsid"].isNull())
-    canonical["wifiSsid"] = doc["wifiSsid"];
-  if (!doc["wifiPassword"].isNull())
-    canonical["wifiPassword"] = doc["wifiPassword"];
-  if (!doc["mqttBroker"].isNull())
-    canonical["mqttBroker"] = doc["mqttBroker"];
-  if (!doc["mqttPort"].isNull())
-    canonical["mqttPort"] = doc["mqttPort"];
-  if (!doc["mqttUsername"].isNull())
-    canonical["mqttUsername"] = doc["mqttUsername"];
-  if (!doc["mqttPassword"].isNull())
-    canonical["mqttPassword"] = doc["mqttPassword"];
-  if (!doc["pricePerLiter"].isNull())
-    canonical["pricePerLiter"] = doc["pricePerLiter"];
-  if (!doc["sessionTimeout"].isNull())
-    canonical["sessionTimeout"] = doc["sessionTimeout"];
-  if (!doc["freeWaterCooldown"].isNull())
-    canonical["freeWaterCooldown"] = doc["freeWaterCooldown"];
-  if (!doc["freeWaterAmount"].isNull())
-    canonical["freeWaterAmount"] = doc["freeWaterAmount"];
-  if (!doc["pulsesPerLiter"].isNull())
-    canonical["pulsesPerLiter"] = doc["pulsesPerLiter"];
-  if (!doc["tdsThreshold"].isNull())
-    canonical["tdsThreshold"] = doc["tdsThreshold"];
-  if (!doc["tdsTemperatureC"].isNull())
-    canonical["tdsTemperatureC"] = doc["tdsTemperatureC"];
-  if (!doc["tdsCalibrationFactor"].isNull())
-    canonical["tdsCalibrationFactor"] = doc["tdsCalibrationFactor"];
-  if (!doc["enableFreeWater"].isNull())
-    canonical["enableFreeWater"] = doc["enableFreeWater"];
-  if (!doc["relayActiveHigh"].isNull())
-    canonical["relayActiveHigh"] = doc["relayActiveHigh"];
-  if (!doc["relay_active_high"].isNull())
-    canonical["relay_active_high"] = doc["relay_active_high"];
-  if (!doc["cashPulseValue"].isNull())
-    canonical["cashPulseValue"] = doc["cashPulseValue"];
-  if (!doc["cashPulseGapMs"].isNull())
-    canonical["cashPulseGapMs"] = doc["cashPulseGapMs"];
-  if (!doc["paymentCheckInterval"].isNull())
-    canonical["paymentCheckInterval"] = doc["paymentCheckInterval"];
-  if (!doc["displayUpdateInterval"].isNull())
-    canonical["displayUpdateInterval"] = doc["displayUpdateInterval"];
-  if (!doc["tdsCheckInterval"].isNull())
-    canonical["tdsCheckInterval"] = doc["tdsCheckInterval"];
-  if (!doc["heartbeatInterval"].isNull())
-    canonical["heartbeatInterval"] = doc["heartbeatInterval"];
-  if (!doc["enablePowerSave"].isNull())
-    canonical["enablePowerSave"] = doc["enablePowerSave"];
-  if (!doc["deepSleepStartHour"].isNull())
-    canonical["deepSleepStartHour"] = doc["deepSleepStartHour"];
-  if (!doc["deepSleepEndHour"].isNull())
-    canonical["deepSleepEndHour"] = doc["deepSleepEndHour"];
+
+  auto copyAlias = [&](const char *dstKey, const char *keyA,
+                       const char *keyB = nullptr) {
+    if (!doc[keyA].isNull()) {
+      canonical[dstKey] = doc[keyA];
+      return;
+    }
+    if (keyB && !doc[keyB].isNull()) {
+      canonical[dstKey] = doc[keyB];
+    }
+  };
+
+  copyAlias("apply", "apply");
+  copyAlias("deviceId", "deviceId", "device_id");
+  copyAlias("wifiSsid", "wifiSsid", "wifi_ssid");
+  copyAlias("wifiPassword", "wifiPassword", "wifi_password");
+  copyAlias("mqttBroker", "mqttBroker", "mqtt_broker");
+  copyAlias("mqttPort", "mqttPort", "mqtt_port");
+  copyAlias("mqttUsername", "mqttUsername", "mqtt_username");
+  copyAlias("mqttPassword", "mqttPassword", "mqtt_password");
+  copyAlias("pricePerLiter", "pricePerLiter", "price_per_liter");
+  copyAlias("sessionTimeout", "sessionTimeout", "session_timeout");
+  copyAlias("freeWaterCooldown", "freeWaterCooldown", "free_water_cooldown");
+  copyAlias("freeWaterAmount", "freeWaterAmount", "free_water_amount");
+  copyAlias("pulsesPerLiter", "pulsesPerLiter", "pulses_per_liter");
+  copyAlias("tdsThreshold", "tdsThreshold", "tds_threshold");
+  copyAlias("tdsTemperatureC", "tdsTemperatureC", "tds_temperature_c");
+  copyAlias("tdsCalibrationFactor", "tdsCalibrationFactor",
+            "tds_calibration_factor");
+  copyAlias("enableFreeWater", "enableFreeWater", "enable_free_water");
+  copyAlias("relayActiveHigh", "relayActiveHigh", "relay_active_high");
+  copyAlias("cashPulseValue", "cashPulseValue", "cash_pulse_value");
+  copyAlias("cashPulseGapMs", "cashPulseGapMs", "cash_pulse_gap_ms");
+  copyAlias("paymentCheckInterval", "paymentCheckInterval",
+            "payment_check_interval");
+  copyAlias("displayUpdateInterval", "displayUpdateInterval",
+            "display_update_interval");
+  copyAlias("tdsCheckInterval", "tdsCheckInterval", "tds_check_interval");
+  copyAlias("heartbeatInterval", "heartbeatInterval", "heartbeat_interval");
+  copyAlias("enablePowerSave", "enablePowerSave", "enable_power_save");
+  copyAlias("deepSleepStartHour", "deepSleepStartHour",
+            "deep_sleep_start_hour");
+  copyAlias("deepSleepEndHour", "deepSleepEndHour", "deep_sleep_end_hour");
   if (!doc["transaction_id"].isNull())
     canonical["transaction_id"] = doc["transaction_id"];
   if (!doc["nonce"].isNull())
@@ -304,14 +294,20 @@ static String canonicalConfig(const JsonDocument &doc) {
 
 static String canonicalCommand(const JsonDocument &doc) {
   JsonDocument canonical;
-  if (!doc["action"].isNull())
+  if (!doc["action"].isNull()) {
     canonical["action"] = doc["action"];
-  if (!doc["threshold"].isNull())
+  }
+  if (!doc["threshold"].isNull()) {
     canonical["threshold"] = doc["threshold"];
-  if (!doc["tdsThreshold"].isNull())
+  }
+  if (!doc["tdsThreshold"].isNull()) {
     canonical["tdsThreshold"] = doc["tdsThreshold"];
-  if (!doc["reason"].isNull())
+  } else if (!doc["tds_threshold"].isNull()) {
+    canonical["tdsThreshold"] = doc["tds_threshold"];
+  }
+  if (!doc["reason"].isNull()) {
     canonical["reason"] = doc["reason"];
+  }
   if (!doc["transaction_id"].isNull())
     canonical["transaction_id"] = doc["transaction_id"];
   if (!doc["nonce"].isNull())
@@ -450,16 +446,16 @@ static bool verifySignedMessage(const JsonDocument &doc,
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("]: ");
+  DEBUG_PRINT("Message arrived [");
+  DEBUG_PRINT(topic);
+  DEBUG_PRINT("]: ");
 
   // Parse JSON
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload, length);
 
   if (error) {
-    Serial.println("JSON parse error!");
+    DEBUG_PRINTLN("JSON parse error!");
     return;
   }
 
@@ -468,14 +464,14 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   // Handle Payment
   if (topicStr == TOPIC_PAYMENT_IN) {
     if (!doc["amount"].is<int>()) {
-      Serial.println("ERROR: Missing payment amount");
+      DEBUG_PRINTLN("ERROR: Missing payment amount");
       publishLog("ERROR", "Missing payment amount");
       return;
     }
 
     String canonical = canonicalPayment(doc);
     if (!verifySignedMessage(doc, canonical)) {
-      Serial.println("Payment rejected: signature invalid");
+      DEBUG_PRINTLN("Payment rejected: signature invalid");
       return;
     }
 
@@ -511,13 +507,13 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
                    userId.length() ? userId.c_str() : nullptr);
   } else if (topicStr == TOPIC_CONFIG_IN) {
     if (!kMqttInboundConfigEnabled) {
-      Serial.println("Config topic ignored (disabled)");
+      DEBUG_PRINTLN("Config topic ignored (disabled)");
       return;
     }
-    Serial.println("Config update received");
+    DEBUG_PRINTLN("Config update received");
     String canonical = canonicalConfig(doc);
     if (!verifySignedMessage(doc, canonical)) {
-      Serial.println("Config rejected: signature invalid");
+      DEBUG_PRINTLN("Config rejected: signature invalid");
       return;
     }
     if (!enforceSignedReplayProtection(doc, "CONFIG", "cfg_nonce_idx",
@@ -528,14 +524,14 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   } else if (topicStr == TOPIC_BROADCAST_CONFIG ||
              topicStr == TOPIC_GROUP_CONFIG) {
     if (!kMqttInboundFleetEnabled) {
-      Serial.println("Fleet config topic ignored (disabled)");
+      DEBUG_PRINTLN("Fleet config topic ignored (disabled)");
       return;
     }
-    Serial.println("Broadcast/Group config received");
+    DEBUG_PRINTLN("Broadcast/Group config received");
 
     String canonical = canonicalConfig(doc);
     if (!verifySignedMessage(doc, canonical)) {
-      Serial.println("Broadcast config rejected: signature invalid");
+      DEBUG_PRINTLN("Broadcast config rejected: signature invalid");
       return;
     }
     if (!enforceSignedReplayProtection(doc, "BROADCAST_CONFIG", "cfg_nonce_idx",
@@ -548,22 +544,22 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       int price = doc["pricePerLiter"];
       if (price >= 100 && price <= 100000) { // Range validation
         deviceConfig.pricePerLiter = price;
-        saveConfigToStorage();
+        scheduleConfigSave();
         applyRuntimeConfig();
-        Serial.println("Price updated via broadcast");
+        DEBUG_PRINTLN("Price updated via broadcast");
       } else {
-        Serial.println("Broadcast price rejected: out of range");
+        DEBUG_PRINTLN("Broadcast price rejected: out of range");
       }
     }
     if (!doc["tdsThreshold"].isNull()) {
       int tds = doc["tdsThreshold"];
       if (tds >= 0 && tds <= 2000) { // Range validation
         deviceConfig.tdsThreshold = tds;
-        saveConfigToStorage();
+        scheduleConfigSave();
         applyRuntimeConfig(); // FIX: Apply runtime config for TDS too
-        Serial.println("TDS threshold updated via broadcast");
+        DEBUG_PRINTLN("TDS threshold updated via broadcast");
       } else {
-        Serial.println("Broadcast TDS rejected: out of range");
+        DEBUG_PRINTLN("Broadcast TDS rejected: out of range");
       }
     }
   }
@@ -571,15 +567,15 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   else if (topicStr == TOPIC_BROADCAST_COMMAND ||
            topicStr == TOPIC_GROUP_COMMAND) {
     if (!kMqttInboundFleetEnabled) {
-      Serial.println("Fleet command topic ignored (disabled)");
+      DEBUG_PRINTLN("Fleet command topic ignored (disabled)");
       return;
     }
-    Serial.println("Broadcast/Group command received");
+    DEBUG_PRINTLN("Broadcast/Group command received");
 
     // CRITICAL FIX: Verify signature for commands (must include `action`)
     String canonical = canonicalCommand(doc);
     if (!verifySignedMessage(doc, canonical)) {
-      Serial.println("Command rejected: signature invalid");
+      DEBUG_PRINTLN("Command rejected: signature invalid");
       return;
     }
     if (!enforceSignedReplayProtection(doc, "COMMAND", "cmd_nonce_idx",
@@ -591,7 +587,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 
     if (action == "updateTdsThreshold" && !doc["threshold"].isNull()) {
       deviceConfig.tdsThreshold = doc["threshold"];
-      saveConfigToStorage();
+      scheduleConfigSave();
       publishLog("FLEET", "TDS threshold updated");
     } else if (action == "emergencyShutdown") {
       String reason = doc["reason"] | "Emergency";
@@ -626,14 +622,14 @@ void processPayment(int amount, const char *source, const char *txnId,
 
   const char *safeSource = (source && source[0]) ? source : "unknown";
 
-  Serial.print("Payment received: ");
-  Serial.print(amount);
-  Serial.print(" from ");
-  Serial.println(safeSource);
+  DEBUG_PRINT("Payment received: ");
+  DEBUG_PRINT(amount);
+  DEBUG_PRINT(" from ");
+  DEBUG_PRINTLN(safeSource);
 
   if (txnId && txnId[0]) {
-    Serial.print("Transaction ID: ");
-    Serial.println(txnId);
+    DEBUG_PRINT("Transaction ID: ");
+    DEBUG_PRINTLN(txnId);
   }
 
   balance += amount;
@@ -646,7 +642,7 @@ void processPayment(int amount, const char *source, const char *txnId,
       freeWaterUsed = false;
     } else if (currentState == FREE_WATER) {
       // Payment during free water: continue as paid dispensing immediately.
-      Serial.println("💰 Payment during FREE_WATER → switching to DISPENSING");
+      DEBUG_PRINTLN("💰 Payment during FREE_WATER → switching to DISPENSING");
       currentState = DISPENSING;
       sessionStartBalance = balance;
       freeWaterUsed = true; // Don't allow free water again this session
@@ -655,10 +651,10 @@ void processPayment(int amount, const char *source, const char *txnId,
       setRelay(true);
     } else if (currentState == DISPENSING) {
       // Payment during dispensing: add to balance, continue dispensing
-      Serial.println("💰 Additional payment during DISPENSING");
+      DEBUG_PRINTLN("💰 Additional payment during DISPENSING");
     } else if (currentState == PAUSED) {
       // Payment during pause: add to balance
-      Serial.println("💰 Payment during PAUSED - balance increased");
+      DEBUG_PRINTLN("💰 Payment during PAUSED - balance increased");
     }
   }
 
@@ -867,7 +863,7 @@ void handleConfigUpdate(JsonDocument &doc) {
   }
   beginNetworkApply(prevConfig, wifiChanged, mqttChanged);
 
-  Serial.println("Config updated!");
+  DEBUG_PRINTLN("Config updated!");
   publishLog("CONFIG", "Updated from backend");
   publishStatus();
 }
@@ -956,7 +952,7 @@ void publishStatus() {
   String output;
   serializeJson(doc, output);
 
-  // QoS 1, Retained = true (for latest status)
+  // PubSubClient publish uses QoS 0. Retain latest status for dashboards.
   mqttClient.publish(TOPIC_STATUS_OUT, output.c_str(), true);
 }
 
@@ -974,7 +970,7 @@ void publishLog(const char *event, const char *message) {
     return;
   }
 
-  // QoS 1 for logs (important events)
+  // PubSubClient publish uses QoS 0 (best-effort).
   mqttClient.publish(TOPIC_LOG_OUT, output.c_str(), false);
 }
 

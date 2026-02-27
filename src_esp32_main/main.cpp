@@ -52,6 +52,10 @@ extern bool freeWaterUsed;
 
 // Constants
 const int WATCHDOG_TIMEOUT_SECONDS = 30;
+const unsigned long MQTT_STALL_RECOVERY_MS = 15UL * 60UL * 1000UL;
+const unsigned long NETWORK_RECOVERY_COOLDOWN_MS = 10UL * 60UL * 1000UL;
+static unsigned long lastMqttHealthyMs = 0;
+static unsigned long lastNetworkRecoveryMs = 0;
 
 static const char *resetReasonToString(esp_reset_reason_t reason) {
   switch (reason) {
@@ -86,8 +90,8 @@ void setup() {
   delay(100); // Wait for serial
 
   DEBUG_PRINTLN("\n\n=== VENDING MACHINE STARTING ===");
-  Serial.print("Reset reason: ");
-  Serial.println(resetReasonToString(esp_reset_reason()));
+  DEBUG_PRINT("Reset reason: ");
+  DEBUG_PRINTLN(resetReasonToString(esp_reset_reason()));
 
   // ============================================
   // HARDWARE WATCHDOG TIMER
@@ -136,6 +140,9 @@ void setup() {
     setupMQTT();
   }
 
+  lastMqttHealthyMs = millis();
+  lastNetworkRecoveryMs = 0;
+
   DEBUG_PRINTLN("=== SYSTEM READY ===\n");
   DEBUG_PRINT("Firmware Version: ");
   DEBUG_PRINTLN(FIRMWARE_VERSION);
@@ -172,6 +179,25 @@ void loop() {
         // Only process MQTT loop if connected
         mqttClient.loop();
       }
+    }
+
+    const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+    if (wifiConnected && mqttClient.connected()) {
+      lastMqttHealthyMs = now;
+    } else if (!wifiConnected) {
+      // Network is genuinely down, keep timer fresh to avoid false "stalled"
+      // recovery triggers.
+      lastMqttHealthyMs = now;
+    } else if (currentState == IDLE &&
+               (now - lastMqttHealthyMs) >= MQTT_STALL_RECOVERY_MS &&
+               (now - lastNetworkRecoveryMs) >=
+                   NETWORK_RECOVERY_COOLDOWN_MS) {
+      lastNetworkRecoveryMs = now;
+      DEBUG_PRINTLN("⚠️ MQTT stalled too long, restarting WiFi stack");
+      mqttClient.disconnect();
+      setupWiFi();
+      reconnectMQTT();
+      lastMqttHealthyMs = now;
     }
   }
 
@@ -239,24 +265,30 @@ void loop() {
   }
 
   // Task 7: Button Handling (edge-based debounce)
-  const unsigned long DEBOUNCE_MS = 50;
+  const unsigned long DEBOUNCE_MS = 100;
+  const unsigned long BUTTON_ACTION_GAP_MS = 450;
   static int startLastRaw = HIGH;
   static int startStable = HIGH;
   static unsigned long startLastChangeMs = 0;
   static int pauseLastRaw = HIGH;
   static int pauseStable = HIGH;
   static unsigned long pauseLastChangeMs = 0;
+  static unsigned long lastButtonActionMs = 0;
+  const unsigned long buttonNow = millis();
 
   const int startRaw = digitalRead(START_BUTTON_PIN);
   if (startRaw != startLastRaw) {
     startLastRaw = startRaw;
-    startLastChangeMs = now;
+    startLastChangeMs = buttonNow;
   }
-  if ((now - startLastChangeMs) >= DEBOUNCE_MS && startStable != startLastRaw) {
+  if ((buttonNow - startLastChangeMs) >= DEBOUNCE_MS &&
+      startStable != startLastRaw) {
     startStable = startLastRaw;
-    if (startStable == LOW) {
-      Serial.print("▶️ START pressed! State=");
-      Serial.println(currentState);
+    if (startStable == LOW &&
+        (buttonNow - lastButtonActionMs) >= BUTTON_ACTION_GAP_MS) {
+      DEBUG_PRINT("▶️ START pressed! State=");
+      DEBUG_PRINTLN(currentState);
+      lastButtonActionMs = buttonNow;
       handleStartButton();
     }
   }
@@ -264,13 +296,16 @@ void loop() {
   const int pauseRaw = digitalRead(PAUSE_BUTTON_PIN);
   if (pauseRaw != pauseLastRaw) {
     pauseLastRaw = pauseRaw;
-    pauseLastChangeMs = now;
+    pauseLastChangeMs = buttonNow;
   }
-  if ((now - pauseLastChangeMs) >= DEBOUNCE_MS && pauseStable != pauseLastRaw) {
+  if ((buttonNow - pauseLastChangeMs) >= DEBOUNCE_MS &&
+      pauseStable != pauseLastRaw) {
     pauseStable = pauseLastRaw;
-    if (pauseStable == LOW) {
-      Serial.print("⏸️ PAUSE pressed! State=");
-      Serial.println(currentState);
+    if (pauseStable == LOW &&
+        (buttonNow - lastButtonActionMs) >= BUTTON_ACTION_GAP_MS) {
+      DEBUG_PRINT("⏸️ PAUSE pressed! State=");
+      DEBUG_PRINTLN(currentState);
+      lastButtonActionMs = buttonNow;
       handlePauseButton();
     }
   }

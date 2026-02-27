@@ -7,7 +7,7 @@
 // CONFIGURATION STRUCTURE
 // ============================================
 struct Config {
-  int pricePerLiter = 1000;                 // so'm
+  int pricePerLiter = 500;                  // so'm
   unsigned long sessionTimeout = 300000;    // 5 min (ms)
   unsigned long freeWaterCooldown = 180000; // 3 min (ms)
   float freeWaterAmount = 0.2;              // 200ml (liters)

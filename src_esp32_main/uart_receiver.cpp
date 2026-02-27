@@ -1,6 +1,7 @@
 #include "uart_receiver.h"
 #include "../shared/uart_protocol.h"
 #include "config.h"
+#include "debug.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
 #include "state_machine.h"
@@ -9,14 +10,20 @@
 // CONFIGURATION
 // ============================================
 #define CONNECTION_TIMEOUT_MS 15000
+static constexpr unsigned long PAYMENT_MIN_INTERVAL_MS = 350UL;
+static constexpr int PAYMENT_MIN_AMOUNT = 100;
+static constexpr int PAYMENT_MAX_AMOUNT = 1000000;
+static constexpr uint16_t UART_RX_BYTE_BUDGET = 128;
+static constexpr unsigned long UART_RX_TIME_BUDGET_MS = 3UL;
 
 // ============================================
 // VARIABLES
 // ============================================
 static unsigned long lastMessageMs = 0;
 static bool paymentEspConnected = false;
-static uint32_t recentPaymentSeq[16] = {0};
+static uint32_t recentPaymentSeq[64] = {0};
 static uint8_t recentPaymentSeqIdx = 0;
+static unsigned long lastAcceptedPaymentMs = 0;
 static unsigned long lastCashCfgSendMs = 0;
 static int lastCashPulseValue = -1;
 static unsigned long lastCashGapMs = 0;
@@ -39,6 +46,42 @@ static bool isDuplicatePaymentSeq(uint32_t seq) {
   return false;
 }
 
+static bool parsePaymentDataStrict(const char *data, int *amount,
+                                   uint32_t *seq) {
+  if (!data || !amount || !seq) {
+    return false;
+  }
+
+  const char *comma = strchr(data, ',');
+  if (comma == nullptr) {
+    return false;
+  }
+
+  char *endAmount = nullptr;
+  const long parsedAmount = strtol(data, &endAmount, 10);
+  if (endAmount != comma) {
+    return false;
+  }
+
+  char *endSeq = nullptr;
+  const unsigned long parsedSeq = strtoul(comma + 1, &endSeq, 10);
+  if (*endSeq != '\0') {
+    return false;
+  }
+
+  if (parsedAmount < PAYMENT_MIN_AMOUNT || parsedAmount > PAYMENT_MAX_AMOUNT) {
+    return false;
+  }
+
+  if (parsedSeq == 0) {
+    return false;
+  }
+
+  *amount = static_cast<int>(parsedAmount);
+  *seq = static_cast<uint32_t>(parsedSeq);
+  return true;
+}
+
 // ============================================
 // INITIALIZATION
 // ============================================
@@ -56,14 +99,15 @@ void initUartReceiver() {
   // Clear duplicate tracking array
   memset(recentPaymentSeq, 0, sizeof(recentPaymentSeq));
   recentPaymentSeqIdx = 0;
+  lastAcceptedPaymentMs = 0;
   rxFrameLen = 0;
   rxInFrame = false;
 
-  Serial.print("✓ UART Receiver initialized (RX:");
-  Serial.print(UART_RX_PIN);
-  Serial.print(", TX:");
-  Serial.print(UART_TX_PIN);
-  Serial.println(")");
+  DEBUG_PRINT("✓ UART Receiver initialized (RX:");
+  DEBUG_PRINT(UART_RX_PIN);
+  DEBUG_PRINT(", TX:");
+  DEBUG_PRINT(UART_TX_PIN);
+  DEBUG_PRINTLN(")");
 }
 
 // ============================================
@@ -125,8 +169,17 @@ static void maybeSendCashConfig() {
 // PROCESS INCOMING MESSAGES
 // ============================================
 void processUartReceiver() {
+  const unsigned long readStartMs = millis();
+  uint16_t processedBytes = 0;
+
   while (Serial2.available()) {
+    if (processedBytes >= UART_RX_BYTE_BUDGET ||
+        (millis() - readStartMs) >= UART_RX_TIME_BUDGET_MS) {
+      break;
+    }
+
     const char ch = static_cast<char>(Serial2.read());
+    processedBytes++;
 
     // Frame sync: accept only "$...\\n" packets, drop all other noise bytes.
     if (!rxInFrame) {
@@ -164,46 +217,49 @@ void processUartReceiver() {
       paymentEspConnected = true;
 
       if (strcmp(cmd, CMD_PAYMENT) == 0) {
-        // Payment received from Payment ESP32
         int amount = 0;
         uint32_t seq = 0;
-        const char *comma = strchr(data, ',');
-        if (comma != nullptr) {
-          amount = atoi(data);
-          seq = static_cast<uint32_t>(strtoul(comma + 1, nullptr, 10));
-        } else {
-          // Backward compatible: $PAY,amount
-          amount = atoi(data);
-          seq = 0;
+        if (!parsePaymentDataStrict(data, &amount, &seq)) {
+          DEBUG_PRINT("⚠️ Invalid PAY frame rejected: ");
+          DEBUG_PRINTLN(data);
+          continue;
         }
 
-        Serial.println("============================");
-        Serial.print("💵 UART Payment: ");
-        Serial.print(amount);
-        Serial.print(" so'm (seq=");
-        Serial.print(static_cast<unsigned long>(seq));
-        Serial.println(")");
-        Serial.print("   Balance BEFORE: ");
-        Serial.println(balance);
+        DEBUG_PRINTLN("============================");
+        DEBUG_PRINT("💵 UART Payment: ");
+        DEBUG_PRINT(amount);
+        DEBUG_PRINT(" so'm (seq=");
+        DEBUG_PRINT(static_cast<unsigned long>(seq));
+        DEBUG_PRINTLN(")");
+        DEBUG_PRINT("   Balance BEFORE: ");
+        DEBUG_PRINTLN(balance);
 
         // Send ACK immediately
         sendAck(seq);
 
         // Check for duplicate payment sequence
         if (isDuplicatePaymentSeq(seq)) {
-          Serial.print("⚠️ Duplicate REJECTED, seq=");
-          Serial.println(seq);
+          DEBUG_PRINT("⚠️ Duplicate REJECTED, seq=");
+          DEBUG_PRINTLN(seq);
           continue;
         }
 
-        Serial.println("✅ Processing payment...");
-        processPayment(amount, "cash_uart", nullptr, nullptr);
+        const unsigned long now = millis();
+        if ((now - lastAcceptedPaymentMs) < PAYMENT_MIN_INTERVAL_MS) {
+          DEBUG_PRINT("⚠️ Payment rate-limited, seq=");
+          DEBUG_PRINTLN(static_cast<unsigned long>(seq));
+          continue;
+        }
 
-        Serial.print("   Balance AFTER: ");
-        Serial.println(balance);
-        Serial.print("   State: ");
-        Serial.println(currentState);
-        Serial.println("============================");
+        DEBUG_PRINTLN("✅ Processing payment...");
+        processPayment(amount, "cash_uart", nullptr, nullptr);
+        lastAcceptedPaymentMs = now;
+
+        DEBUG_PRINT("   Balance AFTER: ");
+        DEBUG_PRINTLN(balance);
+        DEBUG_PRINT("   State: ");
+        DEBUG_PRINTLN(currentState);
+        DEBUG_PRINTLN("============================");
 
       } else if (strcmp(cmd, CMD_HEARTBEAT) == 0) {
         sendAck(0);

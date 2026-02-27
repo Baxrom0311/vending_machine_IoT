@@ -1,5 +1,6 @@
 #include "config.h"
 #include "config_storage.h"
+#include "debug.h"
 #include "display.h"
 #include <WiFi.h>
 #include <cstdio>
@@ -48,18 +49,19 @@ static void printWiFiStatus(const char *message) {
 
 static void startWiFiConnect() {
   if (deviceConfig.wifi_ssid[0] == '\0') {
-    Serial.println("WiFi not configured!");
+    DEBUG_PRINTLN("WiFi not configured!");
     printWiFiStatus("Not configured");
     wifiState = WIFI_FAILED;
     return;
   }
 
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(deviceConfig.wifi_ssid);
+  DEBUG_PRINT("Connecting to WiFi: ");
+  DEBUG_PRINTLN(deviceConfig.wifi_ssid);
 
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(deviceConfig.wifi_ssid, deviceConfig.wifi_password);
 
   wifiState = WIFI_CONNECTING;
@@ -71,7 +73,7 @@ void setupWiFi() { startWiFiConnect(); }
 
 void processWiFi() {
   if (wifiState == WIFI_CONNECTED && WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected");
+    DEBUG_PRINTLN("WiFi disconnected");
     printWiFiStatus("Disconnected");
     wifiState = WIFI_FAILED;
     wifiRetryMs = millis();
@@ -79,15 +81,15 @@ void processWiFi() {
 
   if (wifiState == WIFI_CONNECTING) {
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("WiFi Connected!");
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
+      DEBUG_PRINTLN("WiFi Connected!");
+      DEBUG_PRINT("IP: ");
+      DEBUG_PRINTLN(WiFi.localIP());
       printWiFiStatus("Connected");
       wifiState = WIFI_CONNECTED;
       return;
     }
     if (millis() - wifiStartMs > 10000) {
-      Serial.println("WiFi connect timeout");
+      DEBUG_PRINTLN("WiFi connect timeout");
       printWiFiStatus("Failed");
       wifiState = WIFI_FAILED;
       wifiRetryMs = millis();
@@ -136,7 +138,7 @@ void applyRuntimeConfig() {
 // ============================================
 void initConfig() {
   applyRuntimeConfig();
-  Serial.println("Config initialized from storage");
+  DEBUG_PRINTLN("Config initialized from storage");
 }
 
 // ============================================

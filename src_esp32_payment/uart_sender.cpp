@@ -3,6 +3,18 @@
 #include "cash_handler.h"
 #include "hardware.h"
 
+#ifndef ENABLE_DEBUG_LOGS
+#define ENABLE_DEBUG_LOGS 1
+#endif
+
+#if ENABLE_DEBUG_LOGS
+#define PAY_LOG_PRINT(...) Serial.print(__VA_ARGS__)
+#define PAY_LOG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#else
+#define PAY_LOG_PRINT(...)
+#define PAY_LOG_PRINTLN(...)
+#endif
+
 // ============================================
 // CONFIGURATION
 // ============================================
@@ -10,6 +22,8 @@
 #define ACK_TIMEOUT_MS 500 // Reduced from 500ms to minimize blocking
 #define MAX_RETRIES 3
 #define OFFLINE_BUFFER_SIZE 10
+static constexpr uint16_t UART_RX_BYTE_BUDGET = 128;
+static constexpr unsigned long UART_RX_TIME_BUDGET_MS = 3UL;
 
 // ============================================
 // VARIABLES
@@ -67,8 +81,8 @@ static bool processIncomingMessage(const char *message, uint32_t expectedAckSeq,
   if (strcmp(cmd, CMD_STATUS) == 0) {
     lastAckMs = millis();
     mainEspConnected = true;
-    Serial.print("📥 Status: ");
-    Serial.println(data);
+    PAY_LOG_PRINT("📥 Status: ");
+    PAY_LOG_PRINTLN(data);
     return true;
   }
 
@@ -88,8 +102,8 @@ static bool trySendPaymentTx(const PaymentTx &tx) {
            static_cast<unsigned long>(tx.seq));
   buildMessage(buffer, CMD_PAYMENT, data);
 
-  Serial.print("📤 Sending: ");
-  Serial.print(buffer);
+  PAY_LOG_PRINT("📤 Sending: ");
+  PAY_LOG_PRINT(buffer);
 
   // Try to send with retries
   for (int retry = 0; retry < MAX_RETRIES; retry++) {
@@ -115,13 +129,13 @@ static bool trySendPaymentTx(const PaymentTx &tx) {
         continue;
       }
       if (ackMatched) {
-        Serial.println("✓ ACK received");
+        PAY_LOG_PRINTLN("✓ ACK received");
         return true;
       }
     }
 
-    Serial.print("⚠️ No ACK, retry ");
-    Serial.println(retry + 1);
+    PAY_LOG_PRINT("⚠️ No ACK, retry ");
+    PAY_LOG_PRINTLN(retry + 1);
   }
 
   mainEspConnected = false;
@@ -153,12 +167,12 @@ void initUartSender() {
   // payments get rejected as "duplicates" after restart
   nextPaymentSeq = (micros() & 0xFFFF) + 100; // Range: 100 - 65635
 
-  Serial.print("✓ UART initialized (TX:");
-  Serial.print(UART_TX_PIN);
-  Serial.print(", RX:");
-  Serial.print(UART_RX_PIN);
-  Serial.print(") seq_start=");
-  Serial.println(nextPaymentSeq);
+  PAY_LOG_PRINT("✓ UART initialized (TX:");
+  PAY_LOG_PRINT(UART_TX_PIN);
+  PAY_LOG_PRINT(", RX:");
+  PAY_LOG_PRINT(UART_RX_PIN);
+  PAY_LOG_PRINT(") seq_start=");
+  PAY_LOG_PRINTLN(nextPaymentSeq);
 }
 
 // ============================================
@@ -176,9 +190,9 @@ bool sendPayment(int amount) {
     return true;
   }
 
-  Serial.println("❌ Main ESP offline, buffering payment");
+  PAY_LOG_PRINTLN("❌ Main ESP offline, buffering payment");
   if (!enqueuePaymentTx(tx)) {
-    Serial.println("⚠️ Offline buffer full!");
+    PAY_LOG_PRINTLN("⚠️ Offline buffer full!");
     return false;
   }
 
@@ -214,9 +228,20 @@ void sendHeartbeat() {
 // PROCESS INCOMING MESSAGES
 // ============================================
 void processUartReceive() {
+  const unsigned long readStartMs = millis();
+  uint16_t processedBytes = 0;
+
   while (Serial2.available()) {
+    if (processedBytes >= UART_RX_BYTE_BUDGET ||
+        (millis() - readStartMs) >= UART_RX_TIME_BUDGET_MS) {
+      break;
+    }
+
     char buffer[64];
     int len = Serial2.readBytesUntil('\n', buffer, sizeof(buffer) - 1);
+    if (len > 0) {
+      processedBytes += static_cast<uint16_t>(len);
+    }
     buffer[len] = '\0';
     if (len <= 0) {
       continue;
@@ -227,9 +252,9 @@ void processUartReceive() {
 
   // Try to flush offline buffer if connected
   if (mainEspConnected && offlineBufferCount > 0) {
-    Serial.print("📤 Flushing offline buffer (");
-    Serial.print(offlineBufferCount);
-    Serial.println(" payments)");
+    PAY_LOG_PRINT("📤 Flushing offline buffer (");
+    PAY_LOG_PRINT(offlineBufferCount);
+    PAY_LOG_PRINTLN(" payments)");
 
     int sentCount = 0;
     for (int i = 0; i < offlineBufferCount; i++) {

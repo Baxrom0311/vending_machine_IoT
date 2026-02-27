@@ -72,8 +72,8 @@ HealthCheck runDiagnostics() {
     DEBUG_PRINTLN("→ Relay: skipped (not safe to test)");
   }
 
-  // 5. Display Test (LCD I2C - assume OK if initialized)
-  health.displayOk = true; // LCD doesn't have width/height check
+  // 5. Display Test
+  health.displayOk = isDisplayReady();
 
   if (!health.displayOk) {
     health.failureCount++;

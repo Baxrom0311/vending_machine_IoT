@@ -1,200 +1,211 @@
-# 📡 MQTT API Reference
+# MQTT API Reference
 
-**eWater Firmware v2.4.0**  <!-- Updated to match current firmware -->
+Firmware target: `esp32_main` (`v2.4.0-main` line).
 
-This document provides a comprehensive reference for the MQTT interface used by eWater devices.
+This document is aligned with the current implementation in:
+- `src_esp32_main/mqtt_handler.cpp`
+- `src_esp32_main/main.cpp`
+- `src_esp32_main/config.cpp`
+- `src_esp32_main/sensors.cpp`
+- `src_esp32_main/diagnostics.cpp`
 
----
+## Connection Profile
 
-## 🔐 Authentication & Security
+| Setting | Value |
+| :--- | :--- |
+| Protocol | MQTT v3.1.1 over TCP |
+| Broker | `deviceConfig.mqtt_broker` |
+| Port | `deviceConfig.mqtt_port` (default `1883`) |
+| Client ID | `deviceConfig.device_id` |
+| Username/Password | Optional (`mqtt_username`, `mqtt_password`) |
+| KeepAlive | 60s |
+| Socket timeout | 8s |
+| MQTT buffer size | 512 bytes |
 
-### 1. Broker Connection
-*   **Protocol**: MQTT v3.1.1 (TCP)
-*   **ClientId**: `<DEVICE_ID>` (device uses `deviceConfig.device_id`)
-*   **Username/Password**: As configured in device settings.
-*   **KeepAlive**: 60 seconds
+## Topic Matrix
 
-### 2. Message Signing (HMAC-SHA256)
-If `requireSignedMessages` is enabled on the device, critical commands (**Payment**, **Config**, **Broadcast**) MUST be signed.
+`<DEVICE_ID>` below means `deviceConfig.device_id`.
 
-**Replay Protection (ts/nonce)**
-- **Payment**: require `ts` + `transaction_id` (or `nonce`)
-- **Config / Broadcast**: require `ts` + `nonce` (or `transaction_id`)
-- Device rejects reused IDs to prevent replay attacks.
+| Topic | Direction | Enabled by default | Notes |
+| :--- | :--- | :--- | :--- |
+| `vending/<DEVICE_ID>/payment/in` | Cloud -> Device | Yes | Main payment entrypoint |
+| `vending/<DEVICE_ID>/config/in` | Cloud -> Device | No | Compile-time disabled in current firmware profile |
+| `vending/broadcast/config` | Cloud -> Device | No | Compile-time disabled |
+| `vending/broadcast/command` | Cloud -> Device | No | Compile-time disabled |
+| `vending/group/<GROUP_ID>/config` | Cloud -> Device | No | Compile-time disabled |
+| `vending/group/<GROUP_ID>/command` | Cloud -> Device | No | Compile-time disabled |
+| `vending/<DEVICE_ID>/status/out` | Device -> Cloud | Yes | Retained status snapshot |
+| `vending/<DEVICE_ID>/heartbeat` | Device -> Cloud | Yes | Online health pulse |
+| `vending/<DEVICE_ID>/log/out` | Device -> Cloud | Yes | Operational logs/events |
+| `vending/<DEVICE_ID>/tds/out` | Device -> Cloud | Yes | TDS sample publish |
+| `vending/<DEVICE_ID>/diagnostics` | Device -> Cloud | On diagnostic publish | Health report |
+| `vending/<DEVICE_ID>/telemetry` | Device -> Cloud | Reserved | Topic generated, currently not published |
+| `vending/<DEVICE_ID>/alerts` | Device -> Cloud | Reserved | Topic generated, currently not published |
 
-**Algorithm**:
-1.  Canonicalize the JSON payload (or use specific fields).
-2.  Compute `HMAC-SHA256(payload, api_secret)`.
-3.  Append signature to payload as `"sig"` or `"auth": {"sig": "..."}`.
+To enable inbound config/fleet topics, set `kMqttInboundConfigEnabled` and/or
+`kMqttInboundFleetEnabled` in `src_esp32_main/mqtt_handler.cpp`, then rebuild and reflash.
 
-**Python Example**:
-```python
-import hmac, hashlib, json
+## Inbound Payloads
 
-secret = b"my_secure_api_secret"
-payload = '{"amount":5000,"ts":1700000000000,"device_id":"dev01"}'
-signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+### 1) Payment In (`vending/<DEVICE_ID>/payment/in`)
 
-# Send this
-final_payload = {
-    "amount": 5000,
-    "ts": 1700000000000,
-    "device_id": "dev01",
-    "sig": signature
+Required field:
+- `amount` (`int`, `1..1000000`)
+
+Optional fields:
+- `source` (`string`)
+- `transaction_id` (`string`)
+- `nonce` (`string`, used as fallback transaction id)
+- `user_id` (`string`)
+- `ts` (`uint64`, required when signed mode is enabled)
+- `sig` or `auth.sig` (required when signed mode is enabled)
+
+Example:
+```json
+{
+  "amount": 5000,
+  "source": "app",
+  "transaction_id": "TXN_0001",
+  "user_id": "user_42",
+  "ts": 1700000000000,
+  "sig": "hex_hmac_sha256"
 }
 ```
 
----
+### 2) Config In (`vending/<DEVICE_ID>/config/in`) - Disabled by default
 
-## 📥 Subscribe Topics (Device Listens)
+Only works if inbound config is enabled in firmware build. When enabled:
+- partial updates are supported
+- network keys (`wifi*`, `mqtt*`) apply only when `allowRemoteNetworkConfig=true`
+- unsupported/restricted keys are ignored with log
+- `apply: "restart"` saves and reboots
+- network apply has rollback if not healthy within 30s
 
-> Current firmware default (minimal inbound profile): device accepts only `vending/<ID>/payment/in`.
-> `config/in`, `broadcast/*`, and `group/*` inbound control topics are disabled by default.
+Common accepted operational keys:
+- `pricePerLiter` / `price_per_liter`
+- `sessionTimeout` / `session_timeout` (seconds or ms)
+- `freeWaterCooldown` / `free_water_cooldown` (seconds or ms)
+- `freeWaterAmount` / `free_water_amount`
+- `tdsThreshold` / `tds_threshold`
+- `enableFreeWater`
+- `heartbeatInterval` (5000..3600000 ms)
+- `apply` (`"now"` or `"restart"`)
 
-### 1. Payment (`vending/<ID>/payment/in`)
-Authorize a dispense operation.
-*   **Payload**:
-    ```json
-    {
-      "amount": 5000,            // (Required) Amount in currency
-      "source": "app",           // "app", "qr", "card"
-      "transaction_id": "tx123", // Unique ID for de-duplication
-      "nonce": "tx123",          // Alias for transaction_id (optional)
-      "user_id": "user_01",      // Optional user tracking
-      "ts": 1700000000000,       // Timestamp (Required if signing)
-      "sig": "abcdef1234..."     // Signature
-    }
-    ```
+### 3) Broadcast / Group Config & Command - Disabled by default
 
-### 2. Configuration (`vending/<ID>/config/in`) [Disabled by default]
-Update device settings.
-*   **Payload (Partial updates supported)**:
-    ```json
-    {
-      "pricePerLiter": 1200,
-      "wifiSsid": "NewWiFi",
-      "wifiPassword": "pass",
-      "sessionTimeout": 300,
-      "enableFreeWater": true,
-      "apply": "now",            // "now" or "restart"
-      "nonce": "cfg_001",        // Required if signing (replay protection)
-      "ts": 1700000000000,
-      "sig": "..."
-    }
-    ```
+When fleet inbound is enabled:
+- Config supports selected keys (currently `pricePerLiter`, `tdsThreshold`)
+- Command supports:
+  - `updateTdsThreshold`
+  - `emergencyShutdown`
 
-## 📤 Publish Topics (Device Sends)
+## Outbound Payloads
 
-### 1. Heartbeat (`vending/<ID>/heartbeat`)
-Sent periodically to indicate online status.
-*   **Payload**:
-    ```json
-    {
-      "status": "online",
-      "ip": "192.168.1.100",
-      "rssi": -60,
-      "ssid": "WiFi_Name",
-      "uptime": 3600,
-      "firmware_version": "2.4.0-main",
-      "free_heap": 12345
-    }
-    ```
+### 1) Heartbeat (`vending/<DEVICE_ID>/heartbeat`)
+```json
+{
+  "status": "online",
+  "uptime": 12345,
+  "ip": "192.168.1.50",
+  "rssi": -61,
+  "ssid": "OfficeWiFi",
+  "firmware_version": "2.4.0-main",
+  "free_heap": 189432
+}
+```
 
-### 2. Status (`vending/<ID>/status/out`)
-Sent on state change (e.g., Idle -> Dispensing).
-*   **Payload**:
-    ```json
-    {
-      "state": "DISPENSING", // IDLE, ACTIVE, DISPENSING, PAUSED, FREE_WATER
-      "balance": 2500,
-      "last_dispense": 1.5,  // Liters
-      "tds": 85
-    }
-    ```
+### 2) Status (`vending/<DEVICE_ID>/status/out`)
+```json
+{
+  "device_id": "VendingMachine_001",
+  "state": "DISPENSING",
+  "balance": 2500,
+  "last_dispense": 1.42,
+  "tds": 96,
+  "free_water_available": false
+}
+```
 
-### 3. Logs (`vending/<ID>/log/out`)
-Debug and verification logs.
-*   **Payload**: JSON object.
-    ```json
-    {
-      "device_id": "VendingMachine_001",
-      "event": "CONFIG",
-      "message": "Updated from backend"
-    }
-    ```
-    Example events: `PAYMENT`, `CONFIG`, `FLEET`, `ERROR`, `ALERT`.
+### 3) Log (`vending/<DEVICE_ID>/log/out`)
+```json
+{
+  "device_id": "VendingMachine_001",
+  "event": "PAYMENT",
+  "message": "5000|app|TXN_0001|user_42"
+}
+```
 
-### 4. Telemetry (`vending/<ID>/telemetry`)
-Periodic telemetry data for analytics.
-*   **Payload**:
-    ```json
-    {
-      "total_dispensed": 12050.5,
-      "total_revenue": 5000000,
-      "session_count": 50,
-      "uptime": 86400
-    }
-    ```
+### 4) TDS (`vending/<DEVICE_ID>/tds/out`)
+```json
+{
+  "device_id": "VendingMachine_001",
+  "tds": 102
+}
+```
 
----
+### 5) Diagnostics (`vending/<DEVICE_ID>/diagnostics`)
+```json
+{
+  "timestamp": 123456,
+  "components": {
+    "flowSensor": true,
+    "tdsSensor": true,
+    "cashAcceptor": true,
+    "relay": true,
+    "display": true,
+    "wifi": true,
+    "mqtt": true
+  },
+  "failureCount": 0,
+  "failedComponents": []
+}
+```
 
-## 📢 Fleet Connectivity (Broadcast & Group)
+## Security: Signing and Replay
 
-> Disabled by default in current firmware (minimal inbound profile).
+If `requireSignedMessages=false`:
+- Signature is not required.
 
-Commands sent to these topics affect multiple devices.
+If `requireSignedMessages=true`:
+- `api_secret` must be set on device.
+- Signature: HMAC-SHA256 hex.
+- Signature field can be either:
+  - `sig`
+  - `auth.sig`
 
-### 1. Broadcast Config (`vending/broadcast/config`)
-Update settings for **ALL** devices.
-*   **Payload**: Same as standard Config.
-*   **Common Use**: Update price per liter for entire fleet.
+Replay checks:
+- Payment: rejects duplicate `transaction_id`/`nonce` seen in current boot (RAM cache size 8).
+- Config/Command: persistent nonce+timestamp hash cache in NVS (ring size 16 per context).
 
-### 2. Broadcast Command (`vending/broadcast/command`)
-Execute actions on **ALL** devices.
-*   **Payload**:
-    ```json
-    {
-      "action": "updateTdsThreshold",    // Actions: "updateTdsThreshold", "emergencyShutdown"
-      "threshold": 150,
-      "nonce": "cmd_001",         // Required if signing (replay protection)
-      "ts": 1700000000000,        // Required if signing
-      "sig": "..."
-    }
-    ```
+Signing guidance:
+- Signed config/command canonicalization supports both camelCase and snake_case aliases.
+- Avoid sending both variants of the same field in one message.
 
-### 3. Group Config/Command (`vending/group/<GROUP_ID>/...`)
-Same as Broadcast, but targets only devices with matching `groupId` (e.g., "building_A").
+## QoS and Retain
 
----
+- Library in use: `PubSubClient`.
+- Publish QoS: QoS 0 (library default).
+- Retained:
+  - `status/out`: retained `true`
+  - `log/out`, `heartbeat`, `tds/out`, `diagnostics`: retained `false`
 
-## 📋 Full Configuration Map
+## Reconnect and Recovery Behavior
 
-| Key | Type | Description |
-| :--- | :--- | :--- |
-| `pricePerLiter` | `int` | Cost per liter (e.g., 1000). |
-| `pulsesPerLiter` | `float` | Flow sensor calibration (default 450.0). |
-| `sessionTimeout` | `int` | Session timeout (seconds or ms; firmware normalizes). |
-| `freeWaterCooldown` | `int` | Cooldown before free water is available again (seconds or ms). |
-| `freeWaterAmount` | `float` | Amount for free dispense (Liters). |
-| `enableFreeWater` | `bool` | Enable "Free Water" mode. |
-| `tdsThreshold` | `int` | PPM limit for warning. |
-| `tdsTemperatureC` | `float` | Temperature used for TDS compensation. |
-| `tdsCalibrationFactor` | `float` | Calibration multiplier for TDS. |
-| `relayActiveHigh` | `bool` | Relay polarity (true=Active HIGH, false=Active LOW). |
-| `cashPulseValue` | `int` | So’m per cash pulse (default 1000). |
-| `cashPulseGapMs` | `int` | Gap to close a pulse burst (ms). |
-| `paymentCheckInterval` | `int` | Internal interval (ms). |
-| `displayUpdateInterval` | `int` | LCD refresh interval (ms). |
-| `tdsCheckInterval` | `int` | TDS sampling interval (ms). |
-| `heartbeatInterval` | `int` | Heartbeat publish interval (ms). |
-| `wifiSsid` | `string` | WiFi Network Name. |
-| `wifiPassword` | `string` | WiFi Password. |
-| `mqttBroker` | `string` | MQTT Broker Host/IP. |
-| `mqttPort` | `int` | MQTT Broker Port (default 1883). |
-| `mqttUsername` | `string` | MQTT username (optional). |
-| `mqttPassword` | `string` | MQTT password (optional). |
-| `deviceId` | `string` | Unique Device ID. |
-| `groupId` | `string` | Fleet group id (affects group topics). |
+- Reconnect backoff sequence: `5s`, `10s`, `20s`, `60s`, `120s`, `300s` (capped).
+- Reconnect attempts only run when WiFi is connected.
+- Main loop avoids reconnect attempts during active dispensing (`IDLE`-only reconnect attempts).
+- If WiFi is connected but MQTT remains unhealthy for 15 minutes in `IDLE`, firmware restarts WiFi/MQTT stack (with 10-minute recovery cooldown).
 
-> Note: `requireSignedMessages`, `api_secret`, calibration/hardware fields (`pulsesPerLiter`, `tdsTemperatureC`, `tdsCalibrationFactor`, `relayActiveHigh`, cash/interval tuning) and `deviceId` are Serial-only in current firmware.
-> MQTT config updates are intentionally limited to operational keys.
+## Quick Test Commands
+
+Replace `<BROKER>` and `<DEVICE_ID>` with real values.
+
+```bash
+mosquitto_sub -h <BROKER> -t "vending/<DEVICE_ID>/#" -v
+```
+
+```bash
+mosquitto_pub -h <BROKER> \
+  -t "vending/<DEVICE_ID>/payment/in" \
+  -m '{"amount":5000,"source":"app","transaction_id":"TXN_TEST_01"}'
+```

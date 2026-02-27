@@ -10,6 +10,18 @@
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 
+#ifndef ENABLE_DEBUG_LOGS
+#define ENABLE_DEBUG_LOGS 1
+#endif
+
+#if ENABLE_DEBUG_LOGS
+#define PAY_MAIN_LOG_PRINT(...) Serial.print(__VA_ARGS__)
+#define PAY_MAIN_LOG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#else
+#define PAY_MAIN_LOG_PRINT(...)
+#define PAY_MAIN_LOG_PRINTLN(...)
+#endif
+
 // ============================================
 // CONFIGURATION
 // ============================================
@@ -23,11 +35,11 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  eWater - ESP32 Payment Controller");
-  Serial.println("  DEBUG MODE ENABLED");
-  Serial.println("========================================");
+  PAY_MAIN_LOG_PRINTLN();
+  PAY_MAIN_LOG_PRINTLN("========================================");
+  PAY_MAIN_LOG_PRINTLN("  eWater - ESP32 Payment Controller");
+  PAY_MAIN_LOG_PRINTLN("  DEBUG MODE ENABLED");
+  PAY_MAIN_LOG_PRINTLN("========================================");
 
   // Initialize LED
   pinMode(LED_PIN, OUTPUT);
@@ -36,10 +48,10 @@ void setup() {
   // ============================================
   // HARDWARE WATCHDOG TIMER
   // ============================================
-  Serial.println("Enabling Hardware Watchdog...");
+  PAY_MAIN_LOG_PRINTLN("Enabling Hardware Watchdog...");
   esp_task_wdt_init(30, true); // 30 second timeout, auto-reboot enabled
   esp_task_wdt_add(NULL);      // Add current task to watchdog
-  Serial.println("✓ Watchdog enabled");
+  PAY_MAIN_LOG_PRINTLN("✓ Watchdog enabled");
 
   // Initialize UART to Main ESP32
   initUartSender();
@@ -49,16 +61,16 @@ void setup() {
 
   // Check Pulse Pin State
   int pinState = digitalRead(CASH_PULSE_PIN);
-  Serial.print("Initial CASH_PULSE_PIN (GPIO ");
-  Serial.print(CASH_PULSE_PIN);
-  Serial.print(") state: ");
-  Serial.println(pinState == HIGH ? "HIGH (Normal for Pullup)"
-                                  : "LOW (Warning: Start Active?)");
+  PAY_MAIN_LOG_PRINT("Initial CASH_PULSE_PIN (GPIO ");
+  PAY_MAIN_LOG_PRINT(CASH_PULSE_PIN);
+  PAY_MAIN_LOG_PRINT(") state: ");
+  PAY_MAIN_LOG_PRINTLN(pinState == HIGH ? "HIGH (Normal for Pullup)"
+                                        : "LOW (Warning: Start Active?)");
 
-  Serial.println();
-  Serial.println("✓ Payment Controller Ready!");
-  Serial.println("  Waiting for cash...");
-  Serial.println();
+  PAY_MAIN_LOG_PRINTLN();
+  PAY_MAIN_LOG_PRINTLN("✓ Payment Controller Ready!");
+  PAY_MAIN_LOG_PRINTLN("  Waiting for cash...");
+  PAY_MAIN_LOG_PRINTLN();
 
   // Blink LED 3 times to indicate ready
   for (int i = 0; i < 3; i++) {
@@ -82,22 +94,22 @@ void loop() {
   // Check for pending payment
   int payment = getPendingPayment();
   if (payment > 0) {
-    Serial.print("💰 Pending Payment Detected: ");
-    Serial.println(payment);
+    PAY_MAIN_LOG_PRINT("💰 Pending Payment Detected: ");
+    PAY_MAIN_LOG_PRINTLN(payment);
 
     // Send to Main ESP32
     bool sent = sendPayment(payment);
 
     if (sent) {
       clearPendingPayment();
-      Serial.println("✅ Payment sent successfully!");
+      PAY_MAIN_LOG_PRINTLN("✅ Payment sent successfully!");
 
       // Blink LED to confirm
       digitalWrite(LED_PIN, HIGH);
       delay(200);
       digitalWrite(LED_PIN, LOW);
     } else {
-      Serial.println("❌ Failed to send payment (Main ESP offline?)");
+      PAY_MAIN_LOG_PRINTLN("❌ Failed to send payment (Main ESP offline?)");
     }
   }
 

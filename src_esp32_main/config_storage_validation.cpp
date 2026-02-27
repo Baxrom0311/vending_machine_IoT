@@ -1,7 +1,8 @@
 #include "config_storage.h"
+#include "debug.h"
 #include <Arduino.h>
 
-static const int CURRENT_CONFIG_VERSION = 2;
+static const int CURRENT_CONFIG_VERSION = 3;
 
 // ============================================
 // VALIDATE CONFIGURATION
@@ -9,20 +10,23 @@ static const int CURRENT_CONFIG_VERSION = 2;
 void validateConfig() {
   bool changed = false;
 
-  // Migration: old firmware used cash defaults 1000 so'm and 120 ms gap.
-  // Upgrade stored config to new defaults when coming from old config schema.
+  // Migration: apply new defaults for known old schema values.
   if (deviceConfig.configVersion < CURRENT_CONFIG_VERSION) {
     if (deviceConfig.cashPulseValue == 1000 && deviceConfig.cashPulseGapMs == 120) {
       deviceConfig.cashPulseValue = 500;
       deviceConfig.cashPulseGapMs = 600;
-      Serial.println("Config migration: cash defaults updated to 500/600");
+      DEBUG_PRINTLN("Config migration: cash defaults updated to 500/600");
+    }
+    if (deviceConfig.pricePerLiter == 1000) {
+      deviceConfig.pricePerLiter = 500;
+      DEBUG_PRINTLN("Config migration: price default updated to 500 so'm/L");
     }
     deviceConfig.configVersion = CURRENT_CONFIG_VERSION;
     changed = true;
   }
 
   if (deviceConfig.pricePerLiter < 100 || deviceConfig.pricePerLiter > 100000) {
-    deviceConfig.pricePerLiter = 1000;
+    deviceConfig.pricePerLiter = 500;
     changed = true;
   }
   if (deviceConfig.sessionTimeout < 1000) {
@@ -56,7 +60,7 @@ void validateConfig() {
   }
 
   if (changed) {
-    Serial.println("Config validation corrected invalid values.");
+    DEBUG_PRINTLN("Config validation corrected invalid values.");
     saveConfigToStorage();
   }
 }

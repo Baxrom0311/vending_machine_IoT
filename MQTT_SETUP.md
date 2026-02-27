@@ -1,81 +1,104 @@
-# AWS Mosquitto MQTT Broker - Setup Guide
+# MQTT Setup Guide (Current Firmware)
 
-## 📡 Your Broker Info
+This guide matches current `esp32_main` firmware behavior.
 
-**Hostname:** `ec2-3-72-68-85.eu-central-1.compute.amazonaws.com`  
-**IP:** `172.31.32.48` (internal)  
-**Port:** `1883` (MQTT)  
-**Authentication:** Disabled (default)
+## 1. Broker Information
 
----
+Current default broker in project config:
+- Host: `ec2-3-72-68-85.eu-central-1.compute.amazonaws.com`
+- Port: `1883`
+- Auth: optional (`mqtt_username` / `mqtt_password`)
 
-## ✅ Broker Status
-
+Check broker service on server:
 ```bash
-● mosquitto.service - Mosquitto MQTT Broker
-     Active: active (running) ✓
+sudo systemctl status mosquitto
+sudo journalctl -u mosquitto -f
 ```
 
----
+## 2. Configure Device MQTT Credentials
 
-## 🧪 Testing Commands
+Do not hardcode broker/user/pass in source files.
+Set via Serial config (Main ESP32):
 
-### From AWS Server (SSH)
-
-```bash
-# Subscribe to all vending machine topics
-mosquitto_sub -h localhost -t "vending/#" -v
-
-# Subscribe to specific device
-mosquitto_sub -h localhost -t "vending/device_001/#" -v
-
-# Send test payment
-mosquitto_pub -h localhost \
-  -t "vending/device_001/payment/in" \
-  -m '{"amount":5000,"source":"cash","transaction_id":"TEST_123"}'
-
-# Update config
-mosquitto_pub -h localhost \
-  -t "vending/device_001/config/in" \
-  -m '{"pricePerLiter":1200}'
+```text
+SET_WIFI:<ssid>:<password>
+SET_MQTT:<broker>:<port>
+SET_MQTT_AUTH:<user>:<pass>
+SET_DEVICE_ID:<device_id>
+APPLY_CONFIG
+SAVE_CONFIG
+GET_STATUS
 ```
 
-### From Your Mac (Remote)
+Default device id in storage is usually `VendingMachine_001`.
+All topics are generated from this device id.
 
+## 3. Current Inbound Profile (Important)
+
+By default firmware subscribes only to:
+- `vending/<DEVICE_ID>/payment/in`
+
+`config/in`, `broadcast/*`, and `group/*` inbound control topics are compile-time disabled in the current profile.
+To enable them, change `kMqttInboundConfigEnabled` / `kMqttInboundFleetEnabled`
+in `src_esp32_main/mqtt_handler.cpp` and reflash firmware.
+
+## 4. Quick End-to-End Test
+
+### 4.1 Subscribe
 ```bash
-# Subscribe (from your laptop)
 mosquitto_sub -h ec2-3-72-68-85.eu-central-1.compute.amazonaws.com \
   -p 1883 \
-  -t "vending/#" \
+  -t "vending/VendingMachine_001/#" \
   -v
+```
 
-# Publish (from your laptop)
+### 4.2 Publish test payment
+```bash
 mosquitto_pub -h ec2-3-72-68-85.eu-central-1.compute.amazonaws.com \
   -p 1883 \
-  -t "vending/device_001/payment/in" \
-  -m '{"amount":3000,"source":"payme"}'
+  -t "vending/VendingMachine_001/payment/in" \
+  -m '{"amount":5000,"source":"app","transaction_id":"TXN_TEST_001"}'
 ```
 
----
+### 4.3 Expected outgoing topics
+- `vending/VendingMachine_001/log/out`
+- `vending/VendingMachine_001/status/out`
+- `vending/VendingMachine_001/heartbeat`
+- `vending/VendingMachine_001/tds/out`
 
-## 🔐 Security Setup (Recommended for Production)
+## 5. Signed Message Mode (Optional)
 
-### 1. Enable Authentication
+If you enable signed mode:
+```text
+SET_API_SECRET:<secret>
+SET_REQUIRE_SIGNED:1
+SAVE_CONFIG
+```
 
+Then payment payload must include valid signature and replay fields:
+- `sig` (or `auth.sig`)
+- `ts`
+- `transaction_id` (or `nonce`)
+
+Example payload shape:
+```json
+{
+  "amount": 5000,
+  "transaction_id": "TXN_SIGNED_001",
+  "ts": 1700000000000,
+  "sig": "hex_hmac_sha256"
+}
+```
+
+## 6. Production Broker Hardening
+
+### 6.1 Enable username/password
 ```bash
-# SSH to AWS
-ssh -i mosquitto-key.pem ubuntu@ec2-3-72-68-85.eu-central-1.compute.amazonaws.com
-
-# Create password file
 sudo mosquitto_passwd -c /etc/mosquitto/passwd vending_user
-# Enter password when prompted
-
-# Update config
-sudo nano /etc/mosquitto/mosquitto.conf
 ```
 
-Add these lines:
-```
+`/etc/mosquitto/mosquitto.conf`:
+```conf
 allow_anonymous false
 password_file /etc/mosquitto/passwd
 ```
@@ -85,220 +108,39 @@ Restart:
 sudo systemctl restart mosquitto
 ```
 
-Update ESP32 `config.cpp`:
-```cpp
-const char* MQTT_USERNAME = "vending_user";
-const char* MQTT_PASSWORD = "your_password";
-```
+### 6.2 Firewall
+Open MQTT port in security group/firewall:
+- TCP `1883` (or `8883` if TLS enabled)
 
-### 2. Enable TLS/SSL (Optional)
+### 6.3 Optional TLS
+Use `listener 8883` in Mosquitto and certificate chain.
+Current firmware uses `WiFiClient` (non-TLS) by default; TLS requires firmware-side secure client migration.
 
-```bash
-# Generate certificates
-sudo apt install certbot
-sudo certbot certonly --standalone -d your-domain.com
+## 7. Runtime Behavior You Should Know
 
-# Configure in mosquitto.conf
-listener 8883
-cafile /etc/letsencrypt/live/your-domain.com/chain.pem
-certfile /etc/letsencrypt/live/your-domain.com/cert.pem
-keyfile /etc/letsencrypt/live/your-domain.com/privkey.pem
-```
+- KeepAlive: 60s
+- Socket timeout: 8s
+- Reconnect backoff: 5s -> 10s -> 20s -> 60s -> 120s -> 300s
+- Reconnect attempts run only when WiFi is connected
+- Main loop avoids reconnect attempts during active dispensing
+- If WiFi is up but MQTT stays unhealthy for long time (IDLE state), firmware performs network self-recovery
 
-Update ESP32:
-```cpp
-const int MQTT_PORT = 8883;
-// Add WiFiClientSecure instead of WiFiClient
-```
+## 8. Troubleshooting
 
----
+### No MQTT connection
+1. Verify `SET_MQTT` host/port and `SET_MQTT_AUTH`.
+2. Verify broker reachability from same network.
+3. Verify firewall/security group rules.
+4. Check device serial logs and broker logs together.
 
-## 🔥 Firewall Configuration
+### Payment publish sent but device does nothing
+1. Check topic includes exact `device_id`.
+2. Ensure JSON contains `amount` as integer.
+3. If signed mode is on, ensure `sig` + `ts` + `transaction_id/nonce` are present and valid.
 
-**IMPORTANT:** Make sure port 1883 is open in AWS Security Group
+### You sent `config/in` but nothing changes
+That topic is disabled in current inbound profile by default.
 
-### Check Current Rules:
+## 9. Reference
 
-AWS Console → EC2 → Security Groups → Your Instance
-
-### Required Inbound Rules:
-
-| Type | Protocol | Port | Source | Description |
-|------|----------|------|--------|-------------|
-| Custom TCP | TCP | 1883 | 0.0.0.0/0 | MQTT |
-| SSH | TCP | 22 | Your IP | Admin access |
-
-### Add Rule via AWS CLI:
-
-```bash
-aws ec2 authorize-security-group-ingress \
-  --group-id sg-xxxxx \
-  --protocol tcp \
-  --port 1883 \
-  --cidr 0.0.0.0/0
-```
-
----
-
-## 📊 Monitoring
-
-### View Logs
-
-```bash
-# Real-time log monitoring
-sudo journalctl -u mosquitto -f
-
-# Last 100 lines
-sudo journalctl -u mosquitto -n 100
-
-# Specific time range
-sudo journalctl -u mosquitto --since "1 hour ago"
-```
-
-### Check Connections
-
-```bash
-# Show active connections
-sudo netstat -tulnp | grep 1883
-
-# Show mosquitto process
-ps aux | grep mosquitto
-```
-
----
-
-## 🧪 ESP32 Testing Workflow
-
-### 1. Start Monitoring on AWS
-
-```bash
-ssh -i mosquitto-key.pem ubuntu@ec2-3-72-68-85.eu-central-1.compute.amazonaws.com
-mosquitto_sub -h localhost -t "vending/device_001/#" -v
-```
-
-### 2. Flash ESP32
-
-```bash
-cd /Users/baxrom/Documents/PlatformIO/Projects/eWater
-pio run --target upload
-pio device monitor
-```
-
-### 3. Watch for Connection
-
-You should see on AWS:
-```
-vending/device_001/log/out {"device_id":"VendingMachine_001","timestamp":"...","event":"MQTT","message":"Connected"}
-vending/device_001/heartbeat {"timestamp":"...","uptime":0}
-```
-
-### 4. Send Test Payment
-
-From AWS or your Mac:
-```bash
-mosquitto_pub -h localhost \
-  -t "vending/device_001/payment/in" \
-  -m '{"amount":5000,"source":"cash","transaction_id":"TXN_001"}'
-```
-
-Watch ESP32 serial monitor for:
-```
-Payment received: 5000 from cash
-Transaction ID: TXN_001
-```
-
-And AWS subscriber should see:
-```
-vending/device_001/status/out {"device_id":"...","state":1,"balance":5000,...}
-vending/device_001/log/out {"event":"PAYMENT","message":"5000|cash|TXN_001"}
-```
-
----
-
-## 🐛 Troubleshooting
-
-### ESP32 Can't Connect
-
-1. **Check WiFi:**
-   ```cpp
-   // In config.cpp - update these
-   const char* WIFI_SSID = "YourWiFi";
-   const char* WIFI_PASSWORD = "YourPassword";
-   ```
-
-2. **Verify broker address:**
-   ```bash
-   ping ec2-3-72-68-85.eu-central-1.compute.amazonaws.com
-   ```
-
-3. **Check firewall:** Port 1883 must be open
-
-4. **Test from computer first:**
-   ```bash
-   mosquitto_pub -h ec2-3-72-68-85.eu-central-1.compute.amazonaws.com \
-     -t "test" -m "hello"
-   ```
-
-### Mosquitto Not Running
-
-```bash
-sudo systemctl status mosquitto
-sudo systemctl restart mosquitto
-sudo systemctl enable mosquitto  # Start on boot
-```
-
-### Permission Denied
-
-```bash
-sudo chown -R mosquitto:mosquitto /var/log/mosquitto
-sudo chown -R mosquitto:mosquitto /run/mosquitto
-```
-
----
-
-## 📈 Production Checklist
-
-- [ ] Enable authentication (username/password)
-- [ ] Enable TLS/SSL encryption
-- [ ] Set up proper firewall rules
-- [ ] Configure log rotation
-- [ ] Set up monitoring/alerts
-- [ ] Backup configuration
-- [ ] Document credentials securely
-- [ ] Set up automatic updates
-- [ ] Configure persistence (message retention)
-
-### Persistence Configuration
-
-Add to `/etc/mosquitto/mosquitto.conf`:
-```
-persistence true
-persistence_location /var/lib/mosquitto/
-autosave_interval 1800
-```
-
----
-
-## 🎯 Next Steps
-
-1. **Test locally first:**
-   ```bash
-   mosquitto_sub -h ec2-3-72-68-85.eu-central-1.compute.amazonaws.com -t "vending/#" -v
-   ```
-
-2. **Flash ESP32:**
-   ```bash
-   pio run --target upload
-   ```
-
-3. **Monitor both sides:**
-   - AWS: `mosquitto_sub -h localhost -t "#" -v`
-   - ESP32: `pio device monitor`
-
-4. **Send test messages** and verify bidirectional communication
-
----
-
-**Broker Ready:** ✅  
-**ESP32 Config Updated:** ✅  
-**Ready to Flash:** ✅
+- Full topic/payload contract: `docs/MQTT_API.md`

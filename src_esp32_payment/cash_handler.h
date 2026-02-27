@@ -11,7 +11,7 @@
 
 // Pulse width filtering (noise protection)
 #define CASH_MIN_PULSE_MS 10  // Ignore very short spikes
-#define CASH_MAX_PULSE_MS 300 // Ignore abnormally long/stuck pulses
+#define CASH_MAX_PULSE_MS 250 // Ignore abnormally long/stuck pulses
 
 // Pulse active level:
 // - LOW: most bill acceptors pull line to GND during pulse

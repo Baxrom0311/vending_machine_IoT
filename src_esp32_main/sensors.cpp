@@ -1,6 +1,7 @@
 #include "sensors.h"
 #include "config.h"
 #include "config_storage.h"
+#include "debug.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
 #include "relay_control.h"
@@ -27,7 +28,7 @@ void initSensors() {
   // GPIO34-39 on ESP32 do not support internal pull-up/down.
   // External 4.7k-10k pull-up to 3.3V is required for stable flow input.
   pinMode(FLOW_SENSOR_PIN, INPUT);
-  Serial.println("Flow sensor: external pull-up required on this GPIO");
+  DEBUG_PRINTLN("Flow sensor: external pull-up required on this GPIO");
 #else
   pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
 #endif
@@ -85,7 +86,7 @@ int readTDS() {
   // FIX: Validate calibration factor to prevent zero/invalid values
   float calibrationFactor = config.tdsCalibrationFactor;
   if (calibrationFactor <= 0.0f || calibrationFactor > 10.0f) {
-    Serial.println(
+    DEBUG_PRINTLN(
         "WARNING: Invalid TDS calibration factor, using default 1.0");
     calibrationFactor = 1.0f; // Safe default
   }

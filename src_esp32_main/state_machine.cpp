@@ -1,5 +1,6 @@
 #include "state_machine.h"
 #include "config.h"
+#include "debug.h"
 #include "display.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
@@ -25,6 +26,7 @@ unsigned long lastSessionActivity = 0;
 unsigned long freeWaterAvailableTime = 0;
 static SystemState pausedFromState = IDLE;
 static float pendingDispenseCost = 0.0f;
+static unsigned long lastBusyStartHintMs = 0;
 
 // ============================================
 // INITIALIZATION
@@ -42,6 +44,7 @@ void initStateMachine() {
   freeWaterAvailableTime = millis() + config.freeWaterCooldown;
   pausedFromState = IDLE;
   pendingDispenseCost = 0.0f;
+  lastBusyStartHintMs = 0;
 }
 
 // ============================================
@@ -81,7 +84,7 @@ void applyConfigStateEffects() {
 // SESSION TIMEOUT HANDLER
 // ============================================
 void handleSessionTimeout() {
-  Serial.println("Session timeout!");
+  DEBUG_PRINTLN("Session timeout!");
 
   // Log lost balance
   if (balance > 0) {
@@ -191,7 +194,11 @@ void handleStartButton() {
   case DISPENSING:
   case FREE_WATER:
     // START is intentionally ignored while water is already running.
-    showTemporaryMessage("PAUSE=STOP", "");
+    // Throttle this hint to avoid I2C spam when user taps rapidly.
+    if (millis() - lastBusyStartHintMs >= 1500UL) {
+      lastBusyStartHintMs = millis();
+      showTemporaryMessage("PAUSE=STOP", "");
+    }
     break;
 
   default:
@@ -211,7 +218,7 @@ void handlePauseButton() {
     currentState = PAUSED;
     setRelay(false);
 
-    Serial.println("PAUSE button pressed - Relay OFF");
+    DEBUG_PRINTLN("PAUSE button pressed - Relay OFF");
     char msg[32];
     if (prevState == DISPENSING) {
       snprintf(msg, sizeof(msg), "%.2f", totalDispensedLiters);
@@ -238,7 +245,7 @@ void processFlowSensor() {
   // Overflow protection - reset at 1M pulses (~450L @ 2200 pulses/L)
   const unsigned long FLOW_COUNTER_MAX = 1000000UL;
   if (flowPulseCount > FLOW_COUNTER_MAX) {
-    Serial.println("⚠️ Flow counter reset (normal overflow prevention)");
+    DEBUG_PRINTLN("⚠️ Flow counter reset (normal overflow prevention)");
     flowPulseCount = 0;
     lastDispensedLiters = 0.0;
   }
@@ -297,7 +304,7 @@ void processFlowSensor() {
           totalDispensedLiters = 0.0;
           pendingDispenseCost = 0.0f;
           resetSessionTimer();
-          Serial.println("💰 FREE_WATER → DISPENSING (balance available)");
+          DEBUG_PRINTLN("💰 FREE_WATER → DISPENSING (balance available)");
           // Relay stays ON - water continues
         } else {
           // No balance - go back to idle

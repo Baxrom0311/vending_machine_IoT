@@ -1,5 +1,7 @@
 #include "config_storage.h"
+#include "debug.h"
 #include <Preferences.h> // Ensure PlatformIO LDF picks up ESP32 Preferences
+#include <cmath>
 #include <cstring>
 
 static void copyToBuffer(char *dst, size_t dstSize, const String &src) {
@@ -19,6 +21,85 @@ DeviceConfig deviceConfig;
 static bool pendingConfigSave = false;
 static unsigned long pendingConfigSaveSince = 0;
 static const unsigned long CONFIG_SAVE_DEBOUNCE_MS = 2000;
+static DeviceConfig lastSavedSnapshot;
+static bool hasSavedSnapshot = false;
+
+static bool nearlyEqualFloat(float a, float b) {
+  return std::fabs(a - b) <= 0.0001f;
+}
+
+static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
+  if (strncmp(a.wifi_ssid, b.wifi_ssid, sizeof(a.wifi_ssid)) != 0)
+    return false;
+  if (strncmp(a.wifi_password, b.wifi_password, sizeof(a.wifi_password)) != 0)
+    return false;
+  if (strncmp(a.mqtt_broker, b.mqtt_broker, sizeof(a.mqtt_broker)) != 0)
+    return false;
+  if (a.mqtt_port != b.mqtt_port)
+    return false;
+  if (strncmp(a.mqtt_username, b.mqtt_username, sizeof(a.mqtt_username)) != 0)
+    return false;
+  if (strncmp(a.mqtt_password, b.mqtt_password, sizeof(a.mqtt_password)) != 0)
+    return false;
+  if (strncmp(a.device_id, b.device_id, sizeof(a.device_id)) != 0)
+    return false;
+  if (strncmp(a.api_secret, b.api_secret, sizeof(a.api_secret)) != 0)
+    return false;
+  if (a.requireSignedMessages != b.requireSignedMessages)
+    return false;
+  if (a.allowRemoteNetworkConfig != b.allowRemoteNetworkConfig)
+    return false;
+  if (a.pricePerLiter != b.pricePerLiter)
+    return false;
+  if (a.sessionTimeout != b.sessionTimeout)
+    return false;
+  if (a.freeWaterCooldown != b.freeWaterCooldown)
+    return false;
+  if (!nearlyEqualFloat(a.freeWaterAmount, b.freeWaterAmount))
+    return false;
+  if (!nearlyEqualFloat(a.pulsesPerLiter, b.pulsesPerLiter))
+    return false;
+  if (a.tdsThreshold != b.tdsThreshold)
+    return false;
+  if (!nearlyEqualFloat(a.tdsTemperatureC, b.tdsTemperatureC))
+    return false;
+  if (!nearlyEqualFloat(a.tdsCalibrationFactor, b.tdsCalibrationFactor))
+    return false;
+  if (a.enableFreeWater != b.enableFreeWater)
+    return false;
+  if (a.relayActiveHigh != b.relayActiveHigh)
+    return false;
+  if (a.cashPulseValue != b.cashPulseValue)
+    return false;
+  if (a.cashPulseGapMs != b.cashPulseGapMs)
+    return false;
+  if (a.paymentCheckInterval != b.paymentCheckInterval)
+    return false;
+  if (a.displayUpdateInterval != b.displayUpdateInterval)
+    return false;
+  if (a.tdsCheckInterval != b.tdsCheckInterval)
+    return false;
+  if (a.heartbeatInterval != b.heartbeatInterval)
+    return false;
+  if (a.enablePowerSave != b.enablePowerSave)
+    return false;
+  if (a.deepSleepStartHour != b.deepSleepStartHour)
+    return false;
+  if (a.deepSleepEndHour != b.deepSleepEndHour)
+    return false;
+  if (strncmp(a.groupId, b.groupId, sizeof(a.groupId)) != 0)
+    return false;
+  if (a.configVersion != b.configVersion)
+    return false;
+  if (a.configured != b.configured)
+    return false;
+  return true;
+}
+
+static void rememberSavedSnapshot() {
+  lastSavedSnapshot = deviceConfig;
+  hasSavedSnapshot = true;
+}
 
 // ============================================
 // DEFAULT CONFIGURATION
@@ -40,7 +121,7 @@ void loadDefaultConfig() {
   deviceConfig.allowRemoteNetworkConfig = true;
 
   // Vending Settings
-  deviceConfig.pricePerLiter = 1000;
+  deviceConfig.pricePerLiter = 500;
   deviceConfig.sessionTimeout = 300000;    // 5 min
   deviceConfig.freeWaterCooldown = 180000; // 3 min
   deviceConfig.freeWaterAmount = 0.2;      // 200ml
@@ -68,7 +149,7 @@ void loadDefaultConfig() {
   strcpy(deviceConfig.groupId, ""); // Empty by default (no group)
 
   // Flags
-  deviceConfig.configVersion = 2;
+  deviceConfig.configVersion = 3;
   deviceConfig.configured = false;
 }
 
@@ -76,23 +157,23 @@ void loadDefaultConfig() {
 // INITIALIZE CONFIG STORAGE
 // ============================================
 void initConfigStorage() {
-  Serial.println("Initializing config storage...");
+  DEBUG_PRINTLN("Initializing config storage...");
 
   preferences.begin("ewater", true); // Read-only mode
   bool hasConfig = preferences.getBool("has_config", false);
   preferences.end();
 
   if (!hasConfig) {
-    Serial.println("No saved config found. Loading defaults...");
+    DEBUG_PRINTLN("No saved config found. Loading defaults...");
     loadDefaultConfig();
     saveConfigToStorage();
   } else {
-    Serial.println("Loading saved config...");
+    DEBUG_PRINTLN("Loading saved config...");
     loadConfigFromStorage();
     validateConfig(); // Validate loaded config
   }
 
-  Serial.println("Config storage initialized.");
+  DEBUG_PRINTLN("Config storage initialized.");
 }
 
 // ============================================
@@ -130,7 +211,7 @@ void loadConfigFromStorage() {
       preferences.getBool("allow_netcfg", true);
 
   // Vending Settings
-  deviceConfig.pricePerLiter = preferences.getInt("price", 1000);
+  deviceConfig.pricePerLiter = preferences.getInt("price", 500);
   deviceConfig.sessionTimeout = preferences.getULong("sess_timeout", 300000);
   deviceConfig.freeWaterCooldown =
       preferences.getULong("free_cooldown", 180000);
@@ -170,13 +251,20 @@ void loadConfigFromStorage() {
 
   preferences.end();
 
-  Serial.println("Config loaded from storage.");
+  rememberSavedSnapshot();
+  DEBUG_PRINTLN("Config loaded from storage.");
 }
 
 // ============================================
 // SAVE CONFIG TO STORAGE
 // ============================================
 void saveConfigToStorage() {
+  if (hasSavedSnapshot && configsEqual(deviceConfig, lastSavedSnapshot)) {
+    pendingConfigSave = false;
+    DEBUG_PRINTLN("Config unchanged, skip flash write.");
+    return;
+  }
+
   preferences.begin("ewater", false); // Read/Write mode
 
   // WiFi
@@ -228,9 +316,10 @@ void saveConfigToStorage() {
 
   preferences.end();
 
+  rememberSavedSnapshot();
   pendingConfigSave = false;
 
-  Serial.println("Config saved to storage.");
+  DEBUG_PRINTLN("Config saved to storage.");
 }
 
 void scheduleConfigSave() {

@@ -1,7 +1,11 @@
 #include "display.h"
 #include "config.h"
+#include "config_storage.h"
+#include "debug.h"
 #include "hardware.h"
+#include "mqtt_handler.h"
 #include "state_machine.h"
+#include <WiFi.h>
 #include <Wire.h>
 #include <cstdio>
 #include <cstring>
@@ -19,12 +23,21 @@ static bool displayReady = false;
 static char tempMessageLine1[LCD_COLS + 1] = {0};
 static char tempMessageLine2[LCD_COLS + 1] = {0};
 static unsigned long tempMessageEndTime = 0;
-static char networkStatusLine[32] = "WiFi: kutilyapti";
+static unsigned long lastTempMessageSetMs = 0;
+static char wifiStatusMessage[32] = "kutilyapti";
 
 // ============================================
 // RENDER CACHE
 // ============================================
 static char lastLines[LCD_ROWS][LCD_COLS + 1] = {{0}};
+static uint8_t lcdAddressInUse = LCD_I2C_ADDR;
+static unsigned long lastDisplayRecoverAttemptMs = 0;
+static unsigned long lastDisplayHealthCheckMs = 0;
+
+static constexpr unsigned long DISPLAY_RECOVER_RETRY_MS = 800UL;
+static constexpr unsigned long DISPLAY_HEALTH_CHECK_MS = 1500UL;
+static constexpr unsigned long TEMP_MESSAGE_MIN_GAP_MS = 500UL;
+static constexpr uint16_t I2C_TIMEOUT_MS = 25;
 
 static bool probeI2cAddress(uint8_t addr) {
   Wire.beginTransmission(addr);
@@ -96,6 +109,99 @@ static void clearRenderCache() {
   }
 }
 
+static void recoverI2cBusIfStuck() {
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+  delayMicroseconds(5);
+
+  // If lines are already released, no need to pulse the clock.
+  if (digitalRead(I2C_SDA_PIN) == HIGH && digitalRead(I2C_SCL_PIN) == HIGH) {
+    return;
+  }
+
+  DEBUG_PRINTLN("⚠️ I2C bus busy, clock-unwedge...");
+
+#if defined(ARDUINO_ARCH_ESP32)
+  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
+  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+#else
+  pinMode(I2C_SDA_PIN, OUTPUT);
+  pinMode(I2C_SCL_PIN, OUTPUT);
+#endif
+
+  // Release both lines before pulsing.
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(5);
+
+  // Up to 9 clock cycles are typically enough; use 18 as an upper bound.
+  for (uint8_t i = 0; i < 18 && digitalRead(I2C_SDA_PIN) == LOW; i++) {
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(6);
+    digitalWrite(I2C_SCL_PIN, HIGH);
+    delayMicroseconds(6);
+  }
+
+  // Try to generate a STOP condition.
+  digitalWrite(I2C_SDA_PIN, LOW);
+  delayMicroseconds(6);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(6);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(6);
+
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+}
+
+static void configureI2CBus() {
+  // Release lines first, then reinitialize I2C at a conservative speed.
+  recoverI2cBusIfStuck();
+  delay(1);
+
+#if defined(ARDUINO_ARCH_ESP32)
+  Wire.end();
+  delay(1);
+#endif
+
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(100000);
+#if defined(ARDUINO_ARCH_ESP32)
+  Wire.setTimeOut(I2C_TIMEOUT_MS);
+#endif
+}
+
+static bool initLcdDriver(bool recoveryMode) {
+  configureI2CBus();
+
+  const uint8_t detectedAddr = detectLcdAddress();
+  if (detectedAddr == 0) {
+    if (recoveryMode) {
+      DEBUG_PRINTLN("⚠️ LCD recovery failed: I2C ACK yo'q");
+    } else {
+      DEBUG_PRINTLN("⚠️ LCD not detected on I2C bus");
+    }
+    displayReady = false;
+    return false;
+  }
+
+  lcdAddressInUse = detectedAddr;
+  if (detectedAddr != LCD_I2C_ADDR) {
+    DEBUG_PRINT("ℹ️ LCD address override: 0x");
+    DEBUG_PRINT(LCD_I2C_ADDR, HEX);
+    DEBUG_PRINT(" -> 0x");
+    DEBUG_PRINTLN(detectedAddr, HEX);
+  }
+
+  new (&lcd) LiquidCrystal_I2C(detectedAddr, LCD_COLS, LCD_ROWS);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  displayReady = true;
+  clearRenderCache();
+  return true;
+}
+
 static void writeLineCached(uint8_t row, const char *text) {
   if (!displayReady || row >= LCD_ROWS) {
     return;
@@ -127,90 +233,129 @@ static void renderScreen(const char *line0, const char *line1, const char *line2
   }
 }
 
-static void formatBalanceLine(char *out, size_t outSize) {
-  if (balance > 999999999L) {
-    snprintf(out, outSize, "Balans: 999999999");
-    return;
+static float calculateAffordableLiters() {
+  if (config.pricePerLiter <= 0 || balance <= 0) {
+    return 0.0f;
   }
-  if (balance < -99999999L) {
-    snprintf(out, outSize, "Balans: -99999999");
-    return;
-  }
-  snprintf(out, outSize, "Balans: %ld", balance);
-}
 
-static void formatDispensedLine(char *out, size_t outSize, float liters) {
+  float liters =
+      static_cast<float>(balance) / static_cast<float>(config.pricePerLiter);
   if (liters < 0.0f) {
     liters = 0.0f;
   }
-  if (liters > 9999.99f) {
-    liters = 9999.99f;
+  if (liters > 999.99f) {
+    liters = 999.99f;
   }
-  snprintf(out, outSize, "Quyildi: %.2f L", liters);
+  return liters;
 }
 
-static void formatFreeWaterLine(char *out, size_t outSize) {
-  float dispensed = freeWaterDispensed;
-  float limit = config.freeWaterAmount;
-
-  if (dispensed < 0.0f) {
-    dispensed = 0.0f;
+static void formatTopLine(char *out, size_t outSize) {
+  int shownPrice = config.pricePerLiter;
+  if (shownPrice < 0) {
+    shownPrice = 0;
   }
-  if (limit < 0.0f) {
-    limit = 0.0f;
+  if (shownPrice > 9999999) {
+    shownPrice = 9999999;
   }
-  if (dispensed > 999.99f) {
-    dispensed = 999.99f;
-  }
-  if (limit > 999.99f) {
-    limit = 999.99f;
-  }
-
-  snprintf(out, outSize, "Bepul: %.2f/%.2f L", dispensed, limit);
+  snprintf(out, outSize, "Narx: %d so'm/L", shownPrice);
 }
 
-static void renderStateScreen(const char *title, const char *detail,
-                              const char *footerOverride) {
-  char balanceLine[32];
-  formatBalanceLine(balanceLine, sizeof(balanceLine));
-  const char *footer = (footerOverride && footerOverride[0])
-                           ? footerOverride
-                           : networkStatusLine;
-  renderScreen(title, balanceLine, detail, footer);
+static void formatBalanceCapacityLine(char *out, size_t outSize) {
+  long shownBalance = balance;
+  if (shownBalance < 0) {
+    shownBalance = 0;
+  }
+  if (shownBalance > 9999999L) {
+    shownBalance = 9999999L;
+  }
+
+  snprintf(out, outSize, "Balans: %ld", shownBalance);
+}
+
+static void formatRemainingWaterLine(char *out, size_t outSize) {
+  if (currentState == FREE_WATER) {
+    float freeLeft = config.freeWaterAmount - freeWaterDispensed;
+    if (freeLeft < 0.0f) {
+      freeLeft = 0.0f;
+    }
+    if (freeLeft > 999.99f) {
+      freeLeft = 999.99f;
+    }
+    snprintf(out, outSize, "Bepul qoldi:%.2fL", freeLeft);
+    return;
+  }
+
+  const float remainingLiters = calculateAffordableLiters();
+  if (currentState == DISPENSING || currentState == PAUSED) {
+    snprintf(out, outSize, "Qolgan suv:%.2fL", remainingLiters);
+  } else {
+    snprintf(out, outSize, "Quyiladi:%.2fL", remainingLiters);
+  }
+}
+
+static void formatOnlinePaymentLine(char *out, size_t outSize) {
+  if (!isConfigured()) {
+    snprintf(out, outSize, "Onlayn: sozlanmagan");
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    const bool connecting =
+        (strstr(wifiStatusMessage, "Connecting") != nullptr) ||
+        (strstr(wifiStatusMessage, "connecting") != nullptr);
+    snprintf(out, outSize, connecting ? "Onlayn: ulanmoqda"
+                                      : "Onlayn: WiFi yo'q");
+    return;
+  }
+
+  if (mqttClient.connected()) {
+    snprintf(out, outSize, "Onlayn to'lov: OK");
+  } else {
+    snprintf(out, outSize, "Onlayn: server kut.");
+  }
+}
+
+static void renderMainScreen(const char *line2Override,
+                             const char *line3Override) {
+  char line0[32];
+  char line1[32];
+  char line2[32];
+  char line3[32];
+
+  formatTopLine(line0, sizeof(line0));
+  formatBalanceCapacityLine(line1, sizeof(line1));
+
+  if (line2Override && line2Override[0]) {
+    copyBounded(line2, sizeof(line2), line2Override);
+  } else {
+    formatRemainingWaterLine(line2, sizeof(line2));
+  }
+
+  if (line3Override && line3Override[0]) {
+    copyBounded(line3, sizeof(line3), line3Override);
+  } else {
+    formatOnlinePaymentLine(line3, sizeof(line3));
+  }
+
+  renderScreen(line0, line1, line2, line3);
 }
 
 // ============================================
 // INITIALIZATION
 // ============================================
 void initDisplay() {
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  const uint8_t detectedAddr = detectLcdAddress();
-  if (detectedAddr == 0) {
-    Serial.println("⚠️ LCD not detected on I2C bus");
-    displayReady = false;
+  if (!initLcdDriver(false)) {
     return;
   }
-
-  if (detectedAddr != LCD_I2C_ADDR) {
-    Serial.print("ℹ️ LCD address override: 0x");
-    Serial.print(LCD_I2C_ADDR, HEX);
-    Serial.print(" -> 0x");
-    Serial.println(detectedAddr, HEX);
-    new (&lcd) LiquidCrystal_I2C(detectedAddr, LCD_COLS, LCD_ROWS);
-  }
-
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
-  displayReady = true;
 
   tempMessageLine1[0] = '\0';
   tempMessageLine2[0] = '\0';
   tempMessageEndTime = 0;
-  clearRenderCache();
+  lastTempMessageSetMs = 0;
+  lastDisplayRecoverAttemptMs = millis();
+  lastDisplayHealthCheckMs = millis();
 
-  renderScreen("TIZIM YUKLANMOQDA", "Iltimos kuting...", "Balans: 0",
-               networkStatusLine);
+  renderMainScreen("Iltimos kuting...", "Onlayn: tekshirilmoqda");
 }
 
 // ============================================
@@ -218,24 +363,22 @@ void initDisplay() {
 // ============================================
 void setDisplayNetworkStatus(const char *message) {
   const char *safeMessage = (message && message[0]) ? message : "N/A";
-  snprintf(networkStatusLine, sizeof(networkStatusLine), "WiFi: %s",
-           safeMessage);
-
-  if (!displayReady) {
-    return;
-  }
-
-  const uint8_t statusRow = (LCD_ROWS > 0) ? (LCD_ROWS - 1) : 0;
-  writeLineCached(statusRow, networkStatusLine);
+  snprintf(wifiStatusMessage, sizeof(wifiStatusMessage), "%s", safeMessage);
 }
 
 // ============================================
 // TEMPORARY MESSAGE
 // ============================================
 void showTemporaryMessage(const char *line1, const char *line2) {
+  const unsigned long now = millis();
+  if (now - lastTempMessageSetMs < TEMP_MESSAGE_MIN_GAP_MS) {
+    return;
+  }
+
   copyBounded(tempMessageLine1, sizeof(tempMessageLine1), line1 ? line1 : "");
   copyBounded(tempMessageLine2, sizeof(tempMessageLine2), line2 ? line2 : "");
-  tempMessageEndTime = millis() + 2000;
+  tempMessageEndTime = now + 2000;
+  lastTempMessageSetMs = now;
   updateDisplay();
 }
 
@@ -243,25 +386,45 @@ void showTemporaryMessage(const char *line1, const char *line2) {
 // DISPLAY UPDATE
 // ============================================
 void updateDisplay() {
+  const unsigned long now = millis();
+
+  if (!displayReady) {
+    if (now - lastDisplayRecoverAttemptMs >= DISPLAY_RECOVER_RETRY_MS) {
+      lastDisplayRecoverAttemptMs = now;
+      DEBUG_PRINTLN("⚠️ LCD offline, recover attempt...");
+      if (initLcdDriver(true)) {
+        DEBUG_PRINTLN("✓ LCD recovered");
+        renderMainScreen("Ishlashda davom...", "Onlayn: tekshirilmoqda");
+      }
+    }
+    return;
+  }
+
+  if (now - lastDisplayHealthCheckMs >= DISPLAY_HEALTH_CHECK_MS) {
+    lastDisplayHealthCheckMs = now;
+    if (!probeI2cAddress(lcdAddressInUse)) {
+      DEBUG_PRINTLN("⚠️ LCD ACK yo'q, qayta ulanyapti...");
+      displayReady = false;
+    }
+  }
+
   if (!displayReady) {
     return;
   }
 
   static unsigned long lastUpdateMs = 0;
-  if (millis() - lastUpdateMs < 100) {
+  if (now - lastUpdateMs < 100) {
     return;
   }
-  lastUpdateMs = millis();
+  lastUpdateMs = now;
 
-  if (millis() < tempMessageEndTime && tempMessageLine1[0] != '\0') {
-    char balanceLine[32];
-    formatBalanceLine(balanceLine, sizeof(balanceLine));
-    renderScreen(tempMessageLine1, tempMessageLine2, balanceLine,
-                 networkStatusLine);
+  if (now < tempMessageEndTime && tempMessageLine1[0] != '\0') {
+    renderMainScreen(tempMessageLine1,
+                     tempMessageLine2[0] ? tempMessageLine2 : nullptr);
     return;
   }
 
-  if (millis() >= tempMessageEndTime) {
+  if (now >= tempMessageEndTime) {
     tempMessageLine1[0] = '\0';
     tempMessageLine2[0] = '\0';
   }
@@ -283,7 +446,7 @@ void updateDisplay() {
     displayFreeWater();
     break;
   default:
-    renderStateScreen("HOLAT XATO", "Qayta ishga tushiring", nullptr);
+    renderMainScreen("Holat xatosi", "Qayta yoqing");
     break;
   }
 }
@@ -292,36 +455,15 @@ void updateDisplay() {
 // STATE DISPLAYS (optimized for 20x4)
 // ============================================
 void displayIdle() {
-  const bool freeOffer = (config.enableFreeWater && !freeWaterUsed &&
-                          millis() >= freeWaterAvailableTime);
-  const char *detail = freeOffer ? "START: bepul suv" : "Tolovni kiriting";
-  renderStateScreen("HOLAT: KUTISH", detail, nullptr);
+  renderMainScreen(nullptr, nullptr);
 }
 
-void displayActive() {
-  renderStateScreen("HOLAT: TAYYOR", "START ni bosing", nullptr);
-}
+void displayActive() { renderMainScreen(nullptr, nullptr); }
 
-void displayDispensing() {
-  char litersLine[32];
-  formatDispensedLine(litersLine, sizeof(litersLine), totalDispensedLiters);
+void displayDispensing() { renderMainScreen(nullptr, nullptr); }
 
-  const bool showStopHint = ((millis() / 1000UL) % 2UL) == 1UL;
-  renderStateScreen("HOLAT: QUYILMOQDA", litersLine,
-                    showStopHint ? "PAUSE: to'xtatish" : nullptr);
-}
+void displayFreeWater() { renderMainScreen(nullptr, nullptr); }
 
-void displayFreeWater() {
-  char freeLine[32];
-  formatFreeWaterLine(freeLine, sizeof(freeLine));
-
-  const bool showStopHint = ((millis() / 1000UL) % 2UL) == 1UL;
-  renderStateScreen("HOLAT: BEPUL SUV", freeLine,
-                    showStopHint ? "PAUSE: to'xtatish" : nullptr);
-}
-
-void displayPaused() {
-  renderStateScreen("HOLAT: PAUZA", "START: davom eting", nullptr);
-}
+void displayPaused() { renderMainScreen(nullptr, nullptr); }
 
 bool isDisplayReady() { return displayReady; }
