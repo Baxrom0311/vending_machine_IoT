@@ -33,9 +33,15 @@ static char lastLines[LCD_ROWS][LCD_COLS + 1] = {{0}};
 static uint8_t lcdAddressInUse = LCD_I2C_ADDR;
 static unsigned long lastDisplayRecoverAttemptMs = 0;
 static unsigned long lastDisplayHealthCheckMs = 0;
+static unsigned long lastFullRefreshMs = 0;
+static SystemState lastRenderedState = IDLE;
+static bool hasRenderedState = false;
 
 static constexpr unsigned long DISPLAY_RECOVER_RETRY_MS = 800UL;
-static constexpr unsigned long DISPLAY_HEALTH_CHECK_MS = 1500UL;
+static constexpr unsigned long DISPLAY_HEALTH_CHECK_MS = 3000UL;
+static constexpr unsigned long DISPLAY_PERIODIC_FULL_REFRESH_MS =
+    5UL * 60UL * 1000UL; // 5 minutes
+static constexpr unsigned long DISPLAY_STATE_REFRESH_MIN_GAP_MS = 1200UL;
 static constexpr unsigned long TEMP_MESSAGE_MIN_GAP_MS = 500UL;
 static constexpr uint16_t I2C_TIMEOUT_MS = 25;
 
@@ -106,6 +112,24 @@ static void copyBounded(char *dst, size_t dstSize, const char *src) {
 static void clearRenderCache() {
   for (uint8_t row = 0; row < LCD_ROWS; row++) {
     memset(lastLines[row], 0, sizeof(lastLines[row]));
+  }
+}
+
+static void forceFullDisplayRefresh(const char *reason, bool softReinit) {
+  if (!displayReady) {
+    return;
+  }
+  if (softReinit) {
+    // Re-send controller init sequence to recover from occasional LCD desync.
+    lcd.init();
+    lcd.backlight();
+  }
+  lcd.clear();
+  clearRenderCache();
+  lastFullRefreshMs = millis();
+  if (reason && reason[0]) {
+    DEBUG_PRINT("ℹ️ LCD full refresh: ");
+    DEBUG_PRINTLN(reason);
   }
 }
 
@@ -273,18 +297,6 @@ static void formatBalanceCapacityLine(char *out, size_t outSize) {
 }
 
 static void formatRemainingWaterLine(char *out, size_t outSize) {
-  if (currentState == FREE_WATER) {
-    float freeLeft = config.freeWaterAmount - freeWaterDispensed;
-    if (freeLeft < 0.0f) {
-      freeLeft = 0.0f;
-    }
-    if (freeLeft > 999.99f) {
-      freeLeft = 999.99f;
-    }
-    snprintf(out, outSize, "Bepul qoldi:%.2fL", freeLeft);
-    return;
-  }
-
   const float remainingLiters = calculateAffordableLiters();
   if (currentState == DISPENSING || currentState == PAUSED) {
     snprintf(out, outSize, "Qolgan suv:%.2fL", remainingLiters);
@@ -354,6 +366,9 @@ void initDisplay() {
   lastTempMessageSetMs = 0;
   lastDisplayRecoverAttemptMs = millis();
   lastDisplayHealthCheckMs = millis();
+  lastFullRefreshMs = millis();
+  hasRenderedState = false;
+  lastRenderedState = currentState;
 
   renderMainScreen("Iltimos kuting...", "Onlayn: tekshirilmoqda");
 }
@@ -379,7 +394,6 @@ void showTemporaryMessage(const char *line1, const char *line2) {
   copyBounded(tempMessageLine2, sizeof(tempMessageLine2), line2 ? line2 : "");
   tempMessageEndTime = now + 2000;
   lastTempMessageSetMs = now;
-  updateDisplay();
 }
 
 // ============================================
@@ -394,6 +408,9 @@ void updateDisplay() {
       DEBUG_PRINTLN("⚠️ LCD offline, recover attempt...");
       if (initLcdDriver(true)) {
         DEBUG_PRINTLN("✓ LCD recovered");
+        lastFullRefreshMs = millis();
+        hasRenderedState = false;
+        lastRenderedState = currentState;
         renderMainScreen("Ishlashda davom...", "Onlayn: tekshirilmoqda");
       }
     }
@@ -417,6 +434,22 @@ void updateDisplay() {
     return;
   }
   lastUpdateMs = now;
+
+  const bool stateChanged =
+      (!hasRenderedState) || (currentState != lastRenderedState);
+  const bool periodicRefreshDue =
+      (now - lastFullRefreshMs) >= DISPLAY_PERIODIC_FULL_REFRESH_MS;
+
+  if (stateChanged) {
+    // Avoid aggressive clear() storms when buttons are spammed.
+    if ((now - lastFullRefreshMs) >= DISPLAY_STATE_REFRESH_MIN_GAP_MS) {
+      forceFullDisplayRefresh("state change", false);
+    } else {
+      clearRenderCache(); // force redraw without expensive lcd.clear()
+    }
+  } else if (periodicRefreshDue) {
+    forceFullDisplayRefresh("periodic scrub", true);
+  }
 
   if (now < tempMessageEndTime && tempMessageLine1[0] != '\0') {
     renderMainScreen(tempMessageLine1,
@@ -442,13 +475,13 @@ void updateDisplay() {
   case PAUSED:
     displayPaused();
     break;
-  case FREE_WATER:
-    displayFreeWater();
-    break;
   default:
     renderMainScreen("Holat xatosi", "Qayta yoqing");
     break;
   }
+
+  lastRenderedState = currentState;
+  hasRenderedState = true;
 }
 
 // ============================================
@@ -461,8 +494,6 @@ void displayIdle() {
 void displayActive() { renderMainScreen(nullptr, nullptr); }
 
 void displayDispensing() { renderMainScreen(nullptr, nullptr); }
-
-void displayFreeWater() { renderMainScreen(nullptr, nullptr); }
 
 void displayPaused() { renderMainScreen(nullptr, nullptr); }
 

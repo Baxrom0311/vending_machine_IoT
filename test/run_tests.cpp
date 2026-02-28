@@ -36,9 +36,6 @@ void setUp(void) {
   // Sync 'config' global with 'deviceConfig'
   config.pricePerLiter = 1000;
   config.pulsesPerLiter = 450.0;
-  config.enableFreeWater = true;
-  config.freeWaterAmount = 0.2;
-  config.freeWaterCooldown = 0;
   config.sessionTimeout = 300000;
   // config.requireSignedMessages does not exist in Config struct
 
@@ -69,14 +66,14 @@ void tearDown(void) {
 void test_config_load_defaults(void) {
   loadDefaultConfig();
   TEST_ASSERT_EQUAL_STRING("VendingMachine_001", deviceConfig.device_id);
-  TEST_ASSERT_EQUAL_INT(1000, deviceConfig.pricePerLiter);
+  TEST_ASSERT_EQUAL_INT(500, deviceConfig.pricePerLiter);
 }
 
 void test_config_validation(void) {
   deviceConfig.pricePerLiter = -500;
   deviceConfig.sessionTimeout = 500;
   validateConfig();
-  TEST_ASSERT_EQUAL_INT(1000, deviceConfig.pricePerLiter);
+  TEST_ASSERT_EQUAL_INT(500, deviceConfig.pricePerLiter);
   TEST_ASSERT_EQUAL_UINT32(300000, deviceConfig.sessionTimeout);
 }
 
@@ -97,14 +94,6 @@ void test_config_save_load(void) {
 void test_sm_initial_state(void) {
   TEST_ASSERT_EQUAL(IDLE, currentState);
   TEST_ASSERT_EQUAL(0, balance);
-}
-
-void test_sm_free_water(void) {
-  config.enableFreeWater = true;
-  freeWaterAvailableTime = 0;
-  freeWaterUsed = false;
-  handleStartButton();
-  TEST_ASSERT_EQUAL(FREE_WATER, currentState);
 }
 
 void test_sm_paid_dispense(void) {
@@ -190,7 +179,6 @@ int main(int argc, char **argv) {
 
   // SM
   RUN_TEST(test_sm_initial_state);
-  RUN_TEST(test_sm_free_water);
   RUN_TEST(test_sm_paid_dispense);
   RUN_TEST(test_sm_flow_logic);
 

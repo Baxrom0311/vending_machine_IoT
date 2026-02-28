@@ -1,6 +1,7 @@
 #include "cash_handler.h"
 #include "hardware.h"
 #include "driver/gpio.h"
+#include <climits>
 
 #ifndef ENABLE_DEBUG_LOGS
 #define ENABLE_DEBUG_LOGS 1
@@ -130,7 +131,12 @@ void processCashPulses() {
   interrupts();
 
   int amount = (int)pulses * cashPulseValue;
-  pendingPayment += amount;
+  if (amount > 0 && pendingPayment > INT_MAX - amount) {
+    pendingPayment = INT_MAX;
+    PAY_CASH_LOG_PRINTLN("⚠️ pendingPayment saturated at INT_MAX");
+  } else {
+    pendingPayment += amount;
+  }
 
   PAY_CASH_LOG_PRINTLN("========================");
   PAY_CASH_LOG_PRINT("BILL_DONE pulses=");
@@ -140,10 +146,6 @@ void processCashPulses() {
   PAY_CASH_LOG_PRINT("PENDING_PUL=");
   PAY_CASH_LOG_PRINTLN(pendingPayment);
   PAY_CASH_LOG_PRINTLN("========================");
-  // Blink LED
-  digitalWrite(LED_PIN, HIGH);
-  delay(100);
-  digitalWrite(LED_PIN, LOW);
 }
 // ============================================
 // GETTERS/SETTERS

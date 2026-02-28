@@ -1,6 +1,7 @@
 #include "uart_receiver.h"
 #include "../shared/uart_protocol.h"
 #include "config.h"
+#include "config_storage.h"
 #include "debug.h"
 #include "hardware.h"
 #include "mqtt_handler.h"
@@ -10,39 +11,116 @@
 // CONFIGURATION
 // ============================================
 #define CONNECTION_TIMEOUT_MS 15000
-static constexpr unsigned long PAYMENT_MIN_INTERVAL_MS = 350UL;
 static constexpr int PAYMENT_MIN_AMOUNT = 100;
 static constexpr int PAYMENT_MAX_AMOUNT = 1000000;
 static constexpr uint16_t UART_RX_BYTE_BUDGET = 128;
 static constexpr unsigned long UART_RX_TIME_BUDGET_MS = 3UL;
+static constexpr unsigned long UART_FRAME_TIMEOUT_MS = 150UL;
+static constexpr size_t PAYMENT_SEQ_CACHE_SIZE = 64;
+static constexpr unsigned long PAYMENT_SEQ_FLUSH_MS = 5000UL;
+static constexpr uint8_t PAYMENT_SEQ_MUTATION_LIMIT = 8;
 
 // ============================================
 // VARIABLES
 // ============================================
 static unsigned long lastMessageMs = 0;
 static bool paymentEspConnected = false;
-static uint32_t recentPaymentSeq[64] = {0};
+static uint32_t recentPaymentSeq[PAYMENT_SEQ_CACHE_SIZE] = {0};
 static uint8_t recentPaymentSeqIdx = 0;
-static unsigned long lastAcceptedPaymentMs = 0;
+static bool seqCacheDirty = false;
+static unsigned long seqCacheDirtySinceMs = 0;
+static uint8_t seqCacheMutations = 0;
 static unsigned long lastCashCfgSendMs = 0;
 static int lastCashPulseValue = -1;
 static unsigned long lastCashGapMs = 0;
 static char rxFrame[UART_MSG_BUFFER_SIZE] = {0};
 static uint8_t rxFrameLen = 0;
 static bool rxInFrame = false;
+static unsigned long rxFrameStartMs = 0;
+static uint32_t uartParseErrorCount = 0;
+static uint32_t uartFrameDropCount = 0;
+
+static void markSeqCacheDirty() {
+  if (!seqCacheDirty) {
+    seqCacheDirty = true;
+    seqCacheDirtySinceMs = millis();
+    seqCacheMutations = 0;
+  }
+  if (seqCacheMutations < 255) {
+    seqCacheMutations++;
+  }
+}
+
+static void loadRecentPaymentSeqCache() {
+  memset(recentPaymentSeq, 0, sizeof(recentPaymentSeq));
+  recentPaymentSeqIdx = 0;
+  seqCacheDirty = false;
+  seqCacheDirtySinceMs = 0;
+  seqCacheMutations = 0;
+
+  if (!preferences.begin("ewater", true)) {
+    DEBUG_PRINTLN("⚠️ UART seq cache load failed (NVS open)");
+    return;
+  }
+
+  size_t loaded =
+      preferences.getBytes("uart_seq_buf", recentPaymentSeq, sizeof(recentPaymentSeq));
+  if (loaded != sizeof(recentPaymentSeq)) {
+    memset(recentPaymentSeq, 0, sizeof(recentPaymentSeq));
+  }
+
+  recentPaymentSeqIdx =
+      preferences.getUChar("uart_seq_idx", 0) % PAYMENT_SEQ_CACHE_SIZE;
+  preferences.end();
+}
+
+static void persistRecentPaymentSeqCache() {
+  if (!preferences.begin("ewater", false)) {
+    DEBUG_PRINTLN("⚠️ UART seq cache save failed (NVS open)");
+    return;
+  }
+
+  const size_t saved = preferences.putBytes("uart_seq_buf", recentPaymentSeq,
+                                            sizeof(recentPaymentSeq));
+  const size_t idxSaved =
+      preferences.putUChar("uart_seq_idx",
+                           recentPaymentSeqIdx % PAYMENT_SEQ_CACHE_SIZE);
+  preferences.end();
+
+  if (saved != sizeof(recentPaymentSeq) || idxSaved != sizeof(uint8_t)) {
+    DEBUG_PRINTLN("⚠️ UART seq cache save incomplete");
+  }
+
+  seqCacheDirty = false;
+  seqCacheDirtySinceMs = 0;
+  seqCacheMutations = 0;
+}
+
+static void flushRecentPaymentSeqCacheIfNeeded(bool forceFlush) {
+  if (!seqCacheDirty) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (!forceFlush && seqCacheMutations < PAYMENT_SEQ_MUTATION_LIMIT &&
+      (now - seqCacheDirtySinceMs) < PAYMENT_SEQ_FLUSH_MS) {
+    return;
+  }
+  persistRecentPaymentSeqCache();
+}
 
 static bool isDuplicatePaymentSeq(uint32_t seq) {
   if (seq == 0) {
     return false;
   }
-  for (uint8_t i = 0;
-       i < (sizeof(recentPaymentSeq) / sizeof(recentPaymentSeq[0])); i++) {
+  for (uint8_t i = 0; i < PAYMENT_SEQ_CACHE_SIZE; i++) {
     if (recentPaymentSeq[i] == seq) {
       return true;
     }
   }
-  recentPaymentSeq[recentPaymentSeqIdx++ % (sizeof(recentPaymentSeq) /
-                                            sizeof(recentPaymentSeq[0]))] = seq;
+  recentPaymentSeq[recentPaymentSeqIdx++ % PAYMENT_SEQ_CACHE_SIZE] = seq;
+  markSeqCacheDirty();
+  flushRecentPaymentSeqCacheIfNeeded(false);
   return false;
 }
 
@@ -97,11 +175,12 @@ void initUartReceiver() {
   }
 
   // Clear duplicate tracking array
-  memset(recentPaymentSeq, 0, sizeof(recentPaymentSeq));
-  recentPaymentSeqIdx = 0;
-  lastAcceptedPaymentMs = 0;
+  loadRecentPaymentSeqCache();
   rxFrameLen = 0;
   rxInFrame = false;
+  rxFrameStartMs = 0;
+  uartParseErrorCount = 0;
+  uartFrameDropCount = 0;
 
   DEBUG_PRINT("✓ UART Receiver initialized (RX:");
   DEBUG_PRINT(UART_RX_PIN);
@@ -169,6 +248,14 @@ static void maybeSendCashConfig() {
 // PROCESS INCOMING MESSAGES
 // ============================================
 void processUartReceiver() {
+  const unsigned long now = millis();
+  if (rxInFrame && (now - rxFrameStartMs) > UART_FRAME_TIMEOUT_MS) {
+    rxInFrame = false;
+    rxFrameLen = 0;
+    rxFrameStartMs = 0;
+    uartFrameDropCount++;
+  }
+
   const unsigned long readStartMs = millis();
   uint16_t processedBytes = 0;
 
@@ -186,6 +273,7 @@ void processUartReceiver() {
       if (ch == '$') {
         rxInFrame = true;
         rxFrameLen = 0;
+        rxFrameStartMs = millis();
         rxFrame[rxFrameLen++] = ch;
       }
       continue;
@@ -199,6 +287,8 @@ void processUartReceiver() {
       // Overflow/no newline: drop corrupted frame and wait for next '$'
       rxInFrame = false;
       rxFrameLen = 0;
+      rxFrameStartMs = 0;
+      uartFrameDropCount++;
       continue;
     }
 
@@ -210,6 +300,7 @@ void processUartReceiver() {
 
     rxFrame[rxFrameLen - 1] = '\0'; // strip newline
     rxInFrame = false;
+    rxFrameStartMs = 0;
 
     char cmd[16], data[32];
     if (parseMessage(rxFrame, cmd, data)) {
@@ -220,6 +311,7 @@ void processUartReceiver() {
         int amount = 0;
         uint32_t seq = 0;
         if (!parsePaymentDataStrict(data, &amount, &seq)) {
+          uartParseErrorCount++;
           DEBUG_PRINT("⚠️ Invalid PAY frame rejected: ");
           DEBUG_PRINTLN(data);
           continue;
@@ -234,26 +326,17 @@ void processUartReceiver() {
         DEBUG_PRINT("   Balance BEFORE: ");
         DEBUG_PRINTLN(balance);
 
-        // Send ACK immediately
-        sendAck(seq);
-
         // Check for duplicate payment sequence
         if (isDuplicatePaymentSeq(seq)) {
           DEBUG_PRINT("⚠️ Duplicate REJECTED, seq=");
           DEBUG_PRINTLN(seq);
-          continue;
-        }
-
-        const unsigned long now = millis();
-        if ((now - lastAcceptedPaymentMs) < PAYMENT_MIN_INTERVAL_MS) {
-          DEBUG_PRINT("⚠️ Payment rate-limited, seq=");
-          DEBUG_PRINTLN(static_cast<unsigned long>(seq));
+          sendAck(seq); // Confirm already-applied payment to stop retries
           continue;
         }
 
         DEBUG_PRINTLN("✅ Processing payment...");
         processPayment(amount, "cash_uart", nullptr, nullptr);
-        lastAcceptedPaymentMs = now;
+        sendAck(seq); // ACK only after payment is committed on Main ESP
 
         DEBUG_PRINT("   Balance AFTER: ");
         DEBUG_PRINTLN(balance);
@@ -264,6 +347,8 @@ void processUartReceiver() {
       } else if (strcmp(cmd, CMD_HEARTBEAT) == 0) {
         sendAck(0);
       }
+    } else {
+      uartParseErrorCount++;
     }
 
     rxFrameLen = 0;
@@ -275,9 +360,16 @@ void processUartReceiver() {
   }
 
   maybeSendCashConfig();
+  flushRecentPaymentSeqCacheIfNeeded(false);
 }
 
 // ============================================
 // STATUS
 // ============================================
 bool isPaymentEspConnected() { return paymentEspConnected; }
+
+uint32_t getUartParseErrorCount() { return uartParseErrorCount; }
+
+uint32_t getUartFrameDropCount() { return uartFrameDropCount; }
+
+void flushUartReceiverPersistence() { flushRecentPaymentSeqCacheIfNeeded(true); }

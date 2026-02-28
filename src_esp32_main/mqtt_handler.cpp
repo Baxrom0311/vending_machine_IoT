@@ -9,6 +9,7 @@
 #include "uart_receiver.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <climits>
 #include <cstring>
 #include <mbedtls/md.h>
 
@@ -24,7 +25,8 @@ static bool pendingMqttApply = false;
 static unsigned long networkApplyStartMs = 0;
 static DeviceConfig prevNetworkConfig;
 static const unsigned long networkApplyTimeoutMs = 30000;
-static const uint16_t kMqttSocketTimeoutSec = 8;
+static const uint16_t kMqttSocketTimeoutSec = 2;
+static const uint64_t kSignedTsRollbackToleranceMs = 120000ULL;
 // Minimal inbound MQTT profile:
 // - Keep payment topic enabled
 // - Disable remote config/fleet control by default
@@ -34,6 +36,36 @@ static const bool kMqttInboundFleetEnabled = false;
 static const int RECENT_TXN_CACHE = 8;
 static String recentTxnIds[RECENT_TXN_CACHE];
 static int recentTxnIndex = 0;
+static uint32_t mqttReconnectAttemptCount = 0;
+static uint32_t mqttReconnectFailureCount = 0;
+static uint32_t mqttJsonParseErrorCount = 0;
+
+static constexpr uint8_t kReplayCacheSize = 16;
+static constexpr unsigned long kReplayPersistFlushMs = 5000UL;
+static constexpr uint8_t kReplayPersistMutationLimit = 8;
+
+struct ReplayNonceCache {
+  bool loaded = false;
+  bool dirty = false;
+  uint8_t mutations = 0;
+  unsigned long dirtySinceMs = 0;
+  uint8_t idx = 0;
+  uint64_t values[kReplayCacheSize] = {};
+};
+
+struct ReplayTsCache {
+  bool loaded = false;
+  bool dirty = false;
+  uint64_t lastTs = 0;
+  unsigned long dirtySinceMs = 0;
+};
+
+static ReplayNonceCache payNonceCache;
+static ReplayNonceCache cfgNonceCache;
+static ReplayNonceCache cmdNonceCache;
+static ReplayTsCache payTsCache;
+static ReplayTsCache cfgTsCache;
+static ReplayTsCache cmdTsCache;
 
 // ============================================
 // MQTT SETUP
@@ -45,7 +77,9 @@ void setupMQTT() {
       512); // Payment-only inbound profile does not require large config payloads
   mqttClient.setKeepAlive(60);
   mqttClient.setSocketTimeout(kMqttSocketTimeoutSec);
+#if defined(ARDUINO_ARCH_ESP32)
   espClient.setTimeout(kMqttSocketTimeoutSec);
+#endif
 
   reconnectMQTT();
 }
@@ -77,6 +111,7 @@ void reconnectMQTT() {
     return;
   }
   lastAttempt = now;
+  mqttReconnectAttemptCount++;
 
   DEBUG_PRINT("Connecting to MQTT (attempt ");
   DEBUG_PRINT(failedAttempts + 1);
@@ -120,6 +155,7 @@ void reconnectMQTT() {
     publishLog("MQTT", "Connected");
   } else {
     failedAttempts++; // Increment for backoff calculation
+    mqttReconnectFailureCount++;
     // analytics.incrementMqttReconnects(); // Removed
     DEBUG_PRINT("Failed, rc=");
     DEBUG_PRINT(mqttClient.state());
@@ -258,14 +294,11 @@ static String canonicalConfig(const JsonDocument &doc) {
   copyAlias("mqttPassword", "mqttPassword", "mqtt_password");
   copyAlias("pricePerLiter", "pricePerLiter", "price_per_liter");
   copyAlias("sessionTimeout", "sessionTimeout", "session_timeout");
-  copyAlias("freeWaterCooldown", "freeWaterCooldown", "free_water_cooldown");
-  copyAlias("freeWaterAmount", "freeWaterAmount", "free_water_amount");
   copyAlias("pulsesPerLiter", "pulsesPerLiter", "pulses_per_liter");
   copyAlias("tdsThreshold", "tdsThreshold", "tds_threshold");
   copyAlias("tdsTemperatureC", "tdsTemperatureC", "tds_temperature_c");
   copyAlias("tdsCalibrationFactor", "tdsCalibrationFactor",
             "tds_calibration_factor");
-  copyAlias("enableFreeWater", "enableFreeWater", "enable_free_water");
   copyAlias("relayActiveHigh", "relayActiveHigh", "relay_active_high");
   copyAlias("cashPulseValue", "cashPulseValue", "cash_pulse_value");
   copyAlias("cashPulseGapMs", "cashPulseGapMs", "cash_pulse_gap_ms");
@@ -363,34 +396,204 @@ static uint64_t hashNonceTs(const String &nonce, uint64_t ts) {
   return hash;
 }
 
+static ReplayNonceCache *resolveNonceCache(const char *idxKey,
+                                           const char *bufKey) {
+  if (strcmp(idxKey, "pay_nonce_idx") == 0 &&
+      strcmp(bufKey, "pay_nonce_buf") == 0) {
+    return &payNonceCache;
+  }
+  if (strcmp(idxKey, "cfg_nonce_idx") == 0 &&
+      strcmp(bufKey, "cfg_nonce_buf") == 0) {
+    return &cfgNonceCache;
+  }
+  if (strcmp(idxKey, "cmd_nonce_idx") == 0 &&
+      strcmp(bufKey, "cmd_nonce_buf") == 0) {
+    return &cmdNonceCache;
+  }
+  return nullptr;
+}
+
+static ReplayTsCache *resolveTsCache(const char *tsKey) {
+  if (strcmp(tsKey, "pay_last_ts") == 0) {
+    return &payTsCache;
+  }
+  if (strcmp(tsKey, "cfg_last_ts") == 0) {
+    return &cfgTsCache;
+  }
+  if (strcmp(tsKey, "cmd_last_ts") == 0) {
+    return &cmdTsCache;
+  }
+  return nullptr;
+}
+
+static bool loadNonceCache(const char *idxKey, const char *bufKey,
+                           ReplayNonceCache &cache) {
+  if (cache.loaded) {
+    return true;
+  }
+
+  memset(cache.values, 0, sizeof(cache.values));
+  cache.idx = 0;
+  cache.dirty = false;
+  cache.mutations = 0;
+  cache.dirtySinceMs = 0;
+
+  if (!preferences.begin("ewater", true)) {
+    publishLog("ERROR", "Replay nonce NVS open failed");
+    return false;
+  }
+
+  const size_t loaded =
+      preferences.getBytes(bufKey, cache.values, sizeof(cache.values));
+  if (loaded != 0 && loaded != sizeof(cache.values)) {
+    memset(cache.values, 0, sizeof(cache.values));
+  }
+  cache.idx = preferences.getUChar(idxKey, 0) % kReplayCacheSize;
+  preferences.end();
+
+  cache.loaded = true;
+  return true;
+}
+
+static bool loadTsCache(const char *tsKey, ReplayTsCache &cache) {
+  if (cache.loaded) {
+    return true;
+  }
+
+  cache.lastTs = 0;
+  cache.dirty = false;
+  cache.dirtySinceMs = 0;
+
+  if (!preferences.begin("ewater", true)) {
+    publishLog("ERROR", "Replay ts NVS open failed");
+    return false;
+  }
+  preferences.getBytes(tsKey, &cache.lastTs, sizeof(cache.lastTs));
+  preferences.end();
+
+  cache.loaded = true;
+  return true;
+}
+
+static bool flushNonceCache(const char *idxKey, const char *bufKey,
+                            ReplayNonceCache &cache, bool forceFlush) {
+  if (!cache.dirty) {
+    return true;
+  }
+
+  const unsigned long now = millis();
+  if (!forceFlush &&
+      cache.mutations < kReplayPersistMutationLimit &&
+      (now - cache.dirtySinceMs) < kReplayPersistFlushMs) {
+    return true;
+  }
+
+  if (!preferences.begin("ewater", false)) {
+    publishLog("ERROR", "Replay nonce flush NVS open failed");
+    return false;
+  }
+
+  const size_t saved =
+      preferences.putBytes(bufKey, cache.values, sizeof(cache.values));
+  const size_t idxSaved = preferences.putUChar(idxKey, cache.idx);
+  preferences.end();
+
+  if (saved != sizeof(cache.values) || idxSaved != sizeof(uint8_t)) {
+    publishLog("ERROR", "Replay nonce flush write failed");
+    return false;
+  }
+
+  cache.dirty = false;
+  cache.mutations = 0;
+  cache.dirtySinceMs = 0;
+  return true;
+}
+
+static bool flushTsCache(const char *tsKey, ReplayTsCache &cache,
+                         bool forceFlush) {
+  if (!cache.dirty) {
+    return true;
+  }
+
+  const unsigned long now = millis();
+  if (!forceFlush && (now - cache.dirtySinceMs) < kReplayPersistFlushMs) {
+    return true;
+  }
+
+  if (!preferences.begin("ewater", false)) {
+    publishLog("ERROR", "Replay ts flush NVS open failed");
+    return false;
+  }
+
+  const size_t saved = preferences.putBytes(tsKey, &cache.lastTs, sizeof(uint64_t));
+  preferences.end();
+  if (saved != sizeof(uint64_t)) {
+    publishLog("ERROR", "Replay ts flush write failed");
+    return false;
+  }
+
+  cache.dirty = false;
+  cache.dirtySinceMs = 0;
+  return true;
+}
+
 static bool checkAndStorePersistentNonce(const char *idxKey, const char *bufKey,
                                          uint64_t nonceHash) {
-  static const uint8_t CACHE_SIZE = 16;
-  uint64_t buf[CACHE_SIZE] = {};
+  ReplayNonceCache *cache = resolveNonceCache(idxKey, bufKey);
+  if (!cache) {
+    publishLog("ERROR", "Replay nonce cache mapping missing");
+    return false;
+  }
+  if (!loadNonceCache(idxKey, bufKey, *cache)) {
+    return false;
+  }
 
-  preferences.begin("ewater", false);
-  preferences.getBytes(bufKey, buf, sizeof(buf));
-
-  for (uint8_t i = 0; i < CACHE_SIZE; i++) {
-    if (buf[i] != 0 && buf[i] == nonceHash) {
-      preferences.end();
+  for (uint8_t i = 0; i < kReplayCacheSize; i++) {
+    if (cache->values[i] != 0 && cache->values[i] == nonceHash) {
       return false;
     }
   }
 
-  uint8_t idx = preferences.getUChar(idxKey, 0) % CACHE_SIZE;
-  buf[idx] = nonceHash;
+  cache->values[cache->idx] = nonceHash;
+  cache->idx = (cache->idx + 1) % kReplayCacheSize;
+  if (!cache->dirty) {
+    cache->dirty = true;
+    cache->dirtySinceMs = millis();
+  }
+  if (cache->mutations < 255) {
+    cache->mutations++;
+  }
+  return true;
+}
 
-  preferences.putBytes(bufKey, buf, sizeof(buf));
-  preferences.putUChar(idxKey, (uint8_t)((idx + 1) % CACHE_SIZE));
-  preferences.end();
+static bool checkAndStoreSignedTimestamp(const char *tsKey, uint64_t ts) {
+  if (!tsKey || tsKey[0] == '\0') {
+    return true;
+  }
+
+  ReplayTsCache *cache = resolveTsCache(tsKey);
+  if (!cache) {
+    publishLog("ERROR", "Replay ts cache mapping missing");
+    return false;
+  }
+  if (!loadTsCache(tsKey, *cache)) {
+    return false;
+  }
+  if (cache->lastTs != 0 && ts + kSignedTsRollbackToleranceMs < cache->lastTs) {
+    return false;
+  }
+
+  cache->lastTs = ts;
+  cache->dirty = true;
+  cache->dirtySinceMs = millis();
   return true;
 }
 
 static bool enforceSignedReplayProtection(const JsonDocument &doc,
                                           const char *context,
                                           const char *idxKey,
-                                          const char *bufKey) {
+                                          const char *bufKey,
+                                          const char *tsKey) {
   if (!deviceConfig.requireSignedMessages) {
     return true;
   }
@@ -404,6 +607,11 @@ static bool enforceSignedReplayProtection(const JsonDocument &doc,
   String nonce = extractSignedNonce(doc);
   if (nonce.length() == 0) {
     publishLog("ERROR", (String(context) + " missing nonce").c_str());
+    return false;
+  }
+
+  if (!checkAndStoreSignedTimestamp(tsKey, ts)) {
+    publishLog("ERROR", (String(context) + " stale/invalid ts").c_str());
     return false;
   }
 
@@ -455,14 +663,22 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   DeserializationError error = deserializeJson(doc, payload, length);
 
   if (error) {
+    mqttJsonParseErrorCount++;
     DEBUG_PRINTLN("JSON parse error!");
     return;
   }
 
-  String topicStr = String(topic);
+  const bool isPaymentTopic = (strcmp(topic, TOPIC_PAYMENT_IN) == 0);
+  const bool isConfigTopic = (strcmp(topic, TOPIC_CONFIG_IN) == 0);
+  const bool isBroadcastConfigTopic =
+      (strcmp(topic, TOPIC_BROADCAST_CONFIG) == 0);
+  const bool isGroupConfigTopic = (strcmp(topic, TOPIC_GROUP_CONFIG) == 0);
+  const bool isBroadcastCommandTopic =
+      (strcmp(topic, TOPIC_BROADCAST_COMMAND) == 0);
+  const bool isGroupCommandTopic = (strcmp(topic, TOPIC_GROUP_COMMAND) == 0);
 
   // Handle Payment
-  if (topicStr == TOPIC_PAYMENT_IN) {
+  if (isPaymentTopic) {
     if (!doc["amount"].is<int>()) {
       DEBUG_PRINTLN("ERROR: Missing payment amount");
       publishLog("ERROR", "Missing payment amount");
@@ -476,21 +692,24 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     }
 
     int amount = doc["amount"].as<int>();
-    String source = doc["source"] | "unknown";
+    const char *source =
+        doc["source"].is<const char *>() ? doc["source"].as<const char *>()
+                                         : "unknown";
     String txnId = doc["transaction_id"] | "";
     if (txnId.length() == 0) {
       txnId = doc["nonce"] | "";
     }
-    String userId = doc["user_id"] | "";
+    const char *userId =
+        doc["user_id"].is<const char *>() ? doc["user_id"].as<const char *>()
+                                          : nullptr;
 
     if (deviceConfig.requireSignedMessages) {
-      uint64_t ts = 0;
-      if (!extractSignedTs(doc, ts)) {
-        publishLog("ERROR", "PAYMENT missing ts");
-        return;
-      }
       if (txnId.length() == 0) {
         publishLog("ERROR", "PAYMENT missing transaction_id/nonce");
+        return;
+      }
+      if (!enforceSignedReplayProtection(doc, "PAYMENT", "pay_nonce_idx",
+                                         "pay_nonce_buf", "pay_last_ts")) {
         return;
       }
       if (!isNewTxnId(txnId)) {
@@ -502,10 +721,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 
     // analytics.recordPayment(amount); // Removed
 
-    processPayment(amount, source.c_str(),
-                   txnId.length() ? txnId.c_str() : nullptr,
-                   userId.length() ? userId.c_str() : nullptr);
-  } else if (topicStr == TOPIC_CONFIG_IN) {
+    processPayment(amount, source, txnId.length() ? txnId.c_str() : nullptr,
+                   userId);
+  } else if (isConfigTopic) {
     if (!kMqttInboundConfigEnabled) {
       DEBUG_PRINTLN("Config topic ignored (disabled)");
       return;
@@ -517,12 +735,11 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       return;
     }
     if (!enforceSignedReplayProtection(doc, "CONFIG", "cfg_nonce_idx",
-                                       "cfg_nonce_buf")) {
+                                       "cfg_nonce_buf", "cfg_last_ts")) {
       return;
     }
     handleConfigUpdate(doc);
-  } else if (topicStr == TOPIC_BROADCAST_CONFIG ||
-             topicStr == TOPIC_GROUP_CONFIG) {
+  } else if (isBroadcastConfigTopic || isGroupConfigTopic) {
     if (!kMqttInboundFleetEnabled) {
       DEBUG_PRINTLN("Fleet config topic ignored (disabled)");
       return;
@@ -535,7 +752,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       return;
     }
     if (!enforceSignedReplayProtection(doc, "BROADCAST_CONFIG", "cfg_nonce_idx",
-                                       "cfg_nonce_buf")) {
+                                       "cfg_nonce_buf", "cfg_last_ts")) {
       return;
     }
 
@@ -564,8 +781,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     }
   }
   // Handle Broadcast/Group Commands
-  else if (topicStr == TOPIC_BROADCAST_COMMAND ||
-           topicStr == TOPIC_GROUP_COMMAND) {
+  else if (isBroadcastCommandTopic || isGroupCommandTopic) {
     if (!kMqttInboundFleetEnabled) {
       DEBUG_PRINTLN("Fleet command topic ignored (disabled)");
       return;
@@ -579,7 +795,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       return;
     }
     if (!enforceSignedReplayProtection(doc, "COMMAND", "cmd_nonce_idx",
-                                       "cmd_nonce_buf")) {
+                                       "cmd_nonce_buf", "cmd_last_ts")) {
       return;
     }
 
@@ -632,23 +848,19 @@ void processPayment(int amount, const char *source, const char *txnId,
     DEBUG_PRINTLN(txnId);
   }
 
-  balance += amount;
+  if (amount > 0 && balance > LONG_MAX - amount) {
+    balance = LONG_MAX;
+    publishLog("ERROR", "Balance overflow capped");
+  } else {
+    balance += amount;
+  }
 
   if (balance > 0) {
     if (currentState == IDLE) {
       // Normal: Start paid session from idle
       currentState = ACTIVE;
+      totalDispensedLiters = 0.0f; // Start a fresh paid session counter
       sessionStartBalance = balance;
-      freeWaterUsed = false;
-    } else if (currentState == FREE_WATER) {
-      // Payment during free water: continue as paid dispensing immediately.
-      DEBUG_PRINTLN("💰 Payment during FREE_WATER → switching to DISPENSING");
-      currentState = DISPENSING;
-      sessionStartBalance = balance;
-      freeWaterUsed = true; // Don't allow free water again this session
-      resetFlowCounters();
-      totalDispensedLiters = 0.0;
-      setRelay(true);
     } else if (currentState == DISPENSING) {
       // Payment during dispensing: add to balance, continue dispensing
       DEBUG_PRINTLN("💰 Additional payment during DISPENSING");
@@ -777,7 +989,6 @@ void handleConfigUpdate(JsonDocument &doc) {
   // Vending settings
   // Helper to check both keys
 #define GET_INT(key1, key2) (doc[key1] | doc[key2] | -1)
-#define GET_FLOAT(key1, key2) (doc[key1] | doc[key2] | -1.0f)
 
   int price = GET_INT("pricePerLiter", "price_per_liter");
   if (price >= 100 && price <= 100000) {
@@ -791,28 +1002,12 @@ void handleConfigUpdate(JsonDocument &doc) {
     updated = true;
   }
 
-  int freeCooldown = GET_INT("freeWaterCooldown", "free_water_cooldown");
-  if (freeCooldown > 0) {
-    deviceConfig.freeWaterCooldown = normalizeSecondsOrMs(freeCooldown);
-    updated = true;
-  }
-
-  float freeAmount = GET_FLOAT("freeWaterAmount", "free_water_amount");
-  if (freeAmount > 0) {
-    deviceConfig.freeWaterAmount = freeAmount;
-    updated = true;
-  }
-
   int tdsThresh = GET_INT("tdsThreshold", "tds_threshold");
   if (tdsThresh >= 0 && tdsThresh <= 2000) {
     deviceConfig.tdsThreshold = tdsThresh;
     updated = true;
   }
 
-  if (!doc["enableFreeWater"].isNull()) {
-    deviceConfig.enableFreeWater = doc["enableFreeWater"].as<bool>();
-    updated = true;
-  }
   if (!doc["heartbeatInterval"].isNull()) {
     unsigned long interval = doc["heartbeatInterval"].as<unsigned long>();
     if (interval >= 5000 && interval <= 3600000) {
@@ -824,7 +1019,6 @@ void handleConfigUpdate(JsonDocument &doc) {
   // Power Management Removed
 
 #undef GET_INT
-#undef GET_FLOAT
 
   if (!updated) {
     return;
@@ -841,6 +1035,8 @@ void handleConfigUpdate(JsonDocument &doc) {
   applyMode.toLowerCase();
   if (applyMode == "restart") {
     saveConfigToStorage();
+    processMqttPersistence(true);
+    flushUartReceiverPersistence();
     publishLog("CONFIG", "Saved. Restarting.");
     delay(200);
     ESP.restart();
@@ -922,6 +1118,21 @@ void processNetworkApply() {
   publishStatus();
 }
 
+void processMqttPersistence(bool forceFlush) {
+  flushNonceCache("pay_nonce_idx", "pay_nonce_buf", payNonceCache, forceFlush);
+  flushNonceCache("cfg_nonce_idx", "cfg_nonce_buf", cfgNonceCache, forceFlush);
+  flushNonceCache("cmd_nonce_idx", "cmd_nonce_buf", cmdNonceCache, forceFlush);
+  flushTsCache("pay_last_ts", payTsCache, forceFlush);
+  flushTsCache("cfg_last_ts", cfgTsCache, forceFlush);
+  flushTsCache("cmd_last_ts", cmdTsCache, forceFlush);
+}
+
+uint32_t getMqttReconnectAttemptCount() { return mqttReconnectAttemptCount; }
+
+uint32_t getMqttReconnectFailureCount() { return mqttReconnectFailureCount; }
+
+uint32_t getMqttJsonParseErrorCount() { return mqttJsonParseErrorCount; }
+
 // ============================================
 // MQTT PUBLISH FUNCTIONS
 // ============================================
@@ -934,8 +1145,7 @@ void publishStatus() {
   doc["device_id"] = deviceConfig.device_id;
 
   // MEDIUM FIX: Send state as string, not enum/int
-  const char *stateNames[] = {"IDLE", "ACTIVE", "DISPENSING", "PAUSED",
-                              "FREE_WATER"};
+  const char *stateNames[] = {"IDLE", "ACTIVE", "DISPENSING", "PAUSED"};
   const int stateIndex = static_cast<int>(currentState);
   doc["state"] = (stateIndex >= 0 && stateIndex < (int)(sizeof(stateNames) /
                                                         sizeof(stateNames[0])))
@@ -946,14 +1156,16 @@ void publishStatus() {
   doc["last_dispense"] =
       totalDispensedLiters; // MEDIUM FIX: renamed from "dispensed"
   doc["tds"] = readTDS();
-  doc["free_water_available"] =
-      (millis() >= freeWaterAvailableTime && !freeWaterUsed);
 
-  String output;
-  serializeJson(doc, output);
+  char output[256];
+  size_t outLen = serializeJson(doc, output, sizeof(output));
+  if (outLen == 0) {
+    publishLog("ERROR", "Status JSON overflow");
+    return;
+  }
 
   // PubSubClient publish uses QoS 0. Retain latest status for dashboards.
-  mqttClient.publish(TOPIC_STATUS_OUT, output.c_str(), true);
+  mqttClient.publish(TOPIC_STATUS_OUT, output, true);
 }
 
 void publishLog(const char *event, const char *message) {
@@ -963,15 +1175,18 @@ void publishLog(const char *event, const char *message) {
   doc["event"] = event;
   doc["message"] = message;
 
-  String output;
-  serializeJson(doc, output);
+  char output[256];
+  size_t outLen = serializeJson(doc, output, sizeof(output));
+  if (outLen == 0) {
+    return;
+  }
 
   if (!mqttClient.connected()) {
     return;
   }
 
   // PubSubClient publish uses QoS 0 (best-effort).
-  mqttClient.publish(TOPIC_LOG_OUT, output.c_str(), false);
+  mqttClient.publish(TOPIC_LOG_OUT, output, false);
 }
 
 void publishMQTT(const char *topic, const char *message) {

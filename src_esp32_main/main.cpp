@@ -35,6 +35,7 @@
 #include <ArduinoJson.h>   // Required for heartbeat
 #include <WiFi.h>          // For heartbeat WiFi.localIP() and WiFi.RSSI()
 #include <cstdio>
+#include <Preferences.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h> // Hardware Watchdog Timer
 
@@ -47,15 +48,44 @@ unsigned long lastTdsCheck = 0;
 unsigned long lastHeartbeat = 0;
 // Globals from state_machine.cpp
 extern unsigned long lastSessionActivity;
-extern unsigned long freeWaterAvailableTime;
-extern bool freeWaterUsed;
 
 // Constants
 const int WATCHDOG_TIMEOUT_SECONDS = 30;
 const unsigned long MQTT_STALL_RECOVERY_MS = 15UL * 60UL * 1000UL;
 const unsigned long NETWORK_RECOVERY_COOLDOWN_MS = 10UL * 60UL * 1000UL;
+const unsigned long MQTT_RECONNECT_MIN_INTERVAL_MS = 5000UL;
+const uint8_t SAFE_MODE_FAULT_THRESHOLD = 3;
 static unsigned long lastMqttHealthyMs = 0;
 static unsigned long lastNetworkRecoveryMs = 0;
+static unsigned long lastMqttReconnectAttemptMs = 0;
+static bool safeModeActive = false;
+static uint8_t bootFaultCount = 0;
+static esp_reset_reason_t lastResetReason = ESP_RST_UNKNOWN;
+
+static bool isFaultResetReason(esp_reset_reason_t reason) {
+  return (reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT ||
+          reason == ESP_RST_WDT || reason == ESP_RST_PANIC ||
+          reason == ESP_RST_BROWNOUT);
+}
+
+static uint8_t updateBootFaultCounter(esp_reset_reason_t reason) {
+  Preferences bootPrefs;
+  if (!bootPrefs.begin("ewater", false)) {
+    return 0;
+  }
+
+  uint8_t faults = bootPrefs.getUChar("boot_faults", 0);
+  if (isFaultResetReason(reason)) {
+    if (faults < 250) {
+      faults++;
+    }
+  } else {
+    faults = 0;
+  }
+  bootPrefs.putUChar("boot_faults", faults);
+  bootPrefs.end();
+  return faults;
+}
 
 static const char *resetReasonToString(esp_reset_reason_t reason) {
   switch (reason) {
@@ -89,9 +119,16 @@ void setup() {
   Serial.begin(115200);
   delay(100); // Wait for serial
 
+  lastResetReason = esp_reset_reason();
   DEBUG_PRINTLN("\n\n=== VENDING MACHINE STARTING ===");
   DEBUG_PRINT("Reset reason: ");
-  DEBUG_PRINTLN(resetReasonToString(esp_reset_reason()));
+  DEBUG_PRINTLN(resetReasonToString(lastResetReason));
+
+  bootFaultCount = updateBootFaultCounter(lastResetReason);
+  if (bootFaultCount >= SAFE_MODE_FAULT_THRESHOLD) {
+    safeModeActive = true;
+    DEBUG_PRINTLN("⚠️ SAFE MODE activated due to repeated fault resets");
+  }
 
   // ============================================
   // HARDWARE WATCHDOG TIMER
@@ -132,16 +169,24 @@ void setup() {
   DEBUG_PRINTLN(digitalRead(RELAY_PIN) == HIGH ? "HIGH" : "LOW");
   initSensors();
   initStateMachine();
-  initUartReceiver(); // UART from Payment ESP32 (replaces initPayment)
+
+  if (safeModeActive) {
+    currentState = IDLE;
+    balance = 0;
+    showTemporaryMessage("SAFE MODE", "Serial orqali tiklang");
+  } else {
+    initUartReceiver(); // UART from Payment ESP32 (replaces initPayment)
+  }
 
   // WiFi / MQTT (only if configured)
-  if (configured) {
+  if (configured && !safeModeActive) {
     setupWiFi();
     setupMQTT();
   }
 
   lastMqttHealthyMs = millis();
   lastNetworkRecoveryMs = 0;
+  lastMqttReconnectAttemptMs = 0;
 
   DEBUG_PRINTLN("=== SYSTEM READY ===\n");
   DEBUG_PRINT("Firmware Version: ");
@@ -163,6 +208,29 @@ void loop() {
 
   unsigned long now = millis();
 
+  processMqttPersistence(false);
+
+  if (safeModeActive) {
+    // Keep actuator safe and only allow serial recovery commands.
+    if (isRelayOn()) {
+      setRelay(false);
+    }
+    if (currentState != IDLE) {
+      currentState = IDLE;
+      balance = 0;
+    }
+
+    if (now - lastDisplayUpdate >= config.displayUpdateInterval) {
+      lastDisplayUpdate = now;
+      updateDisplay();
+    }
+
+    handleSerialConfig();
+    processConfigSave();
+    delay(5);
+    return;
+  }
+
   // WiFi connection state machine
   if (isConfigured()) {
     processWiFi();
@@ -170,9 +238,12 @@ void loop() {
     // MQTT Connection - only if WiFi is connected
     if (WiFi.status() == WL_CONNECTED) {
       if (!mqttClient.connected()) {
-        // CRITICAL FIX: Only attempt reconnection if IDLE to prevent blocking
-        // during dispensing
-        if (currentState == IDLE) {
+        // Allow reconnect in all non-dispensing states with a short outer gate.
+        const bool reconnectSafe = (currentState != DISPENSING);
+        if (reconnectSafe &&
+            (now - lastMqttReconnectAttemptMs) >=
+                MQTT_RECONNECT_MIN_INTERVAL_MS) {
+          lastMqttReconnectAttemptMs = now;
           reconnectMQTT();
         }
       } else {
@@ -227,25 +298,14 @@ void loop() {
   // Uses millis() directly (not stale `now`) to prevent unsigned underflow.
   // Applies to all non-IDLE states:
   //   ACTIVE/PAUSED: timeout if user doesn't press START
-  //   DISPENSING/FREE_WATER: timeout if flow sensor stops (safety)
+  //   DISPENSING: timeout if flow sensor stops (safety)
   if (currentState != IDLE) {
     if (millis() - lastSessionActivity >= config.sessionTimeout) {
       handleSessionTimeout();
     }
   }
 
-  // Task 5: Free Water Timer
-  if (config.enableFreeWater && currentState == IDLE) {
-    if (freeWaterUsed && now >= freeWaterAvailableTime) {
-      freeWaterUsed = false;
-    }
-    if (!freeWaterUsed && now >= freeWaterAvailableTime) {
-      // Display will show free water offer
-      // Logic handled in updateDisplay usually
-    }
-  }
-
-  // Task 6: Heartbeat
+  // Task 5: Heartbeat
   if (now - lastHeartbeat >= config.heartbeatInterval) {
     lastHeartbeat = now;
     publishStatus();
@@ -259,14 +319,27 @@ void loop() {
     hb["ssid"] = WiFi.SSID(); // LOW FIX: Added ssid for UI
     hb["firmware_version"] = FIRMWARE_VERSION;
     hb["free_heap"] = ESP.getFreeHeap();
-    String hbStr;
-    serializeJson(hb, hbStr);
-    publishMQTT(TOPIC_HEARTBEAT, hbStr.c_str());
+    hb["min_free_heap"] = ESP.getMinFreeHeap();
+    hb["reset_reason"] = resetReasonToString(lastResetReason);
+    hb["safe_mode"] = safeModeActive;
+    hb["boot_faults"] = bootFaultCount;
+    hb["mqtt_reconnect_attempts"] = getMqttReconnectAttemptCount();
+    hb["mqtt_reconnect_failures"] = getMqttReconnectFailureCount();
+    hb["mqtt_json_parse_errors"] = getMqttJsonParseErrorCount();
+    hb["uart_parse_errors"] = getUartParseErrorCount();
+    hb["uart_frame_drops"] = getUartFrameDropCount();
+    char hbStr[256];
+    size_t hbLen = serializeJson(hb, hbStr, sizeof(hbStr));
+    if (hbLen > 0) {
+      publishMQTT(TOPIC_HEARTBEAT, hbStr);
+    } else {
+      publishLog("ERROR", "Heartbeat JSON overflow");
+    }
   }
 
   // Task 7: Button Handling (edge-based debounce)
   const unsigned long DEBOUNCE_MS = 100;
-  const unsigned long BUTTON_ACTION_GAP_MS = 450;
+  const unsigned long BUTTON_ACTION_GAP_MS = 650;
   static int startLastRaw = HIGH;
   static int startStable = HIGH;
   static unsigned long startLastChangeMs = 0;
@@ -310,8 +383,8 @@ void loop() {
     }
   }
 
-  // Task 8: Flow Sensor Processing
-  if (currentState == DISPENSING || currentState == FREE_WATER) {
+  // Task 7: Flow Sensor Processing
+  if (currentState == DISPENSING) {
     processFlowSensor();
     // HIGH FIX: lastSessionActivity is now updated ONLY when actual flow
     // detected (inside processFlowSensor when litersDiff >= 0.01) This ensures

@@ -40,11 +40,8 @@ The core business logic is managed by `state_machine.cpp`.
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-    IDLE --> FREE_WATER: Button Press (If Enabled)
     IDLE --> ACTIVE: Payment Received
-    
-    FREE_WATER --> IDLE: Amount Reached / Timeout
-    
+
     ACTIVE --> DISPENSING: Start Button
     DISPENSING --> PAUSED: Pause Button
     PAUSED --> DISPENSING: Start Button
@@ -97,7 +94,6 @@ sequenceDiagram
 2.  **ACTIVE**: User has paid (Balance > 0). Ready to dispense.
 3.  **DISPENSING**: Valve OPEN. Flow sensor counting pulses. Balance deducting.
 4.  **PAUSED**: Valve CLOSED. Session timer running.
-5.  **FREE_WATER**: One-time small dispense (e.g., 200ml) for free (Testing/Promo).
 
 ---
 

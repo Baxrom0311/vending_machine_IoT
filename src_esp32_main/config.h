@@ -7,15 +7,12 @@
 // CONFIGURATION STRUCTURE
 // ============================================
 struct Config {
-  int pricePerLiter = 500;                  // so'm
-  unsigned long sessionTimeout = 300000;    // 5 min (ms)
-  unsigned long freeWaterCooldown = 180000; // 3 min (ms)
-  float freeWaterAmount = 0.2;              // 200ml (liters)
-  float pulsesPerLiter = 450.0;             // Flow sensor calibration
-  int tdsThreshold = 100;                   // ppm - warning only
-  float tdsTemperatureC = 25.0;             // TDS compensation temp
-  float tdsCalibrationFactor = 0.5;         // TDS calibration multiplier
-  bool enableFreeWater = true;              // Feature flag
+  int pricePerLiter = 500;               // so'm
+  unsigned long sessionTimeout = 300000; // 5 min (ms)
+  float pulsesPerLiter = 450.0;          // Flow sensor calibration
+  int tdsThreshold = 100;                // ppm - warning only
+  float tdsTemperatureC = 25.0;          // TDS compensation temp
+  float tdsCalibrationFactor = 0.5;      // TDS calibration multiplier
   bool relayActiveHigh = false;        // Relay polarity (forced Active HIGH)
   int cashPulseValue = 500;           // so'm per pulse
   unsigned long cashPulseGapMs = 600; // gap to close pulse burst

@@ -1,6 +1,7 @@
 #include "config_storage.h"
 #include "debug.h"
 #include <Preferences.h> // Ensure PlatformIO LDF picks up ESP32 Preferences
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 
@@ -53,10 +54,6 @@ static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
     return false;
   if (a.sessionTimeout != b.sessionTimeout)
     return false;
-  if (a.freeWaterCooldown != b.freeWaterCooldown)
-    return false;
-  if (!nearlyEqualFloat(a.freeWaterAmount, b.freeWaterAmount))
-    return false;
   if (!nearlyEqualFloat(a.pulsesPerLiter, b.pulsesPerLiter))
     return false;
   if (a.tdsThreshold != b.tdsThreshold)
@@ -64,8 +61,6 @@ static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
   if (!nearlyEqualFloat(a.tdsTemperatureC, b.tdsTemperatureC))
     return false;
   if (!nearlyEqualFloat(a.tdsCalibrationFactor, b.tdsCalibrationFactor))
-    return false;
-  if (a.enableFreeWater != b.enableFreeWater)
     return false;
   if (a.relayActiveHigh != b.relayActiveHigh)
     return false;
@@ -105,13 +100,12 @@ static void rememberSavedSnapshot() {
 // DEFAULT CONFIGURATION
 // ============================================
 void loadDefaultConfig() {
-  // WiFi (empty by default - will be configured via serial/app)
-  strcpy(deviceConfig.wifi_ssid, "+998935580311");
-  strcpy(deviceConfig.wifi_password, "Baxrom0311");
+  // WiFi (empty by default - must be provisioned explicitly)
+  deviceConfig.wifi_ssid[0] = '\0';
+  deviceConfig.wifi_password[0] = '\0';
 
   // MQTT
-  strcpy(deviceConfig.mqtt_broker,
-         "ec2-3-72-68-85.eu-central-1.compute.amazonaws.com");
+  deviceConfig.mqtt_broker[0] = '\0';
   deviceConfig.mqtt_port = 1883;
   strcpy(deviceConfig.mqtt_username, "");
   strcpy(deviceConfig.mqtt_password, "");
@@ -122,14 +116,11 @@ void loadDefaultConfig() {
 
   // Vending Settings
   deviceConfig.pricePerLiter = 500;
-  deviceConfig.sessionTimeout = 300000;    // 5 min
-  deviceConfig.freeWaterCooldown = 180000; // 3 min
-  deviceConfig.freeWaterAmount = 0.2;      // 200ml
+  deviceConfig.sessionTimeout = 300000; // 5 min
   deviceConfig.pulsesPerLiter = 450.0;
   deviceConfig.tdsThreshold = 100;
   deviceConfig.tdsTemperatureC = 25.0;
   deviceConfig.tdsCalibrationFactor = 0.5;
-  deviceConfig.enableFreeWater = true;
   deviceConfig.relayActiveHigh = true; // Relay polarity (Active HIGH for modules)
   deviceConfig.cashPulseValue = 500;
   deviceConfig.cashPulseGapMs = 600;
@@ -159,7 +150,11 @@ void loadDefaultConfig() {
 void initConfigStorage() {
   DEBUG_PRINTLN("Initializing config storage...");
 
-  preferences.begin("ewater", true); // Read-only mode
+  if (!preferences.begin("ewater", true)) {
+    DEBUG_PRINTLN("⚠️ NVS open failed, loading defaults");
+    loadDefaultConfig();
+    return;
+  }
   bool hasConfig = preferences.getBool("has_config", false);
   preferences.end();
 
@@ -180,7 +175,12 @@ void initConfigStorage() {
 // LOAD CONFIG FROM STORAGE
 // ============================================
 void loadConfigFromStorage() {
-  preferences.begin("ewater", true); // Read-only mode
+  if (!preferences.begin("ewater", true)) { // Read-only mode
+    DEBUG_PRINTLN("⚠️ NVS read open failed, using defaults");
+    loadDefaultConfig();
+    rememberSavedSnapshot();
+    return;
+  }
 
   // WiFi
   String ssid = preferences.getString("wifi_ssid", "");
@@ -213,14 +213,10 @@ void loadConfigFromStorage() {
   // Vending Settings
   deviceConfig.pricePerLiter = preferences.getInt("price", 500);
   deviceConfig.sessionTimeout = preferences.getULong("sess_timeout", 300000);
-  deviceConfig.freeWaterCooldown =
-      preferences.getULong("free_cooldown", 180000);
-  deviceConfig.freeWaterAmount = preferences.getFloat("free_amount", 0.2);
   deviceConfig.pulsesPerLiter = preferences.getFloat("pulses", 450.0);
   deviceConfig.tdsThreshold = preferences.getInt("tds_thresh", 100);
   deviceConfig.tdsTemperatureC = preferences.getFloat("tds_temp", 25.0);
   deviceConfig.tdsCalibrationFactor = preferences.getFloat("tds_calib", 0.5);
-  deviceConfig.enableFreeWater = preferences.getBool("enable_free", true);
   // Hardware policy: relay is fixed Active-HIGH.
   deviceConfig.relayActiveHigh = true;
   deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 500);
@@ -265,56 +261,104 @@ void saveConfigToStorage() {
     return;
   }
 
-  preferences.begin("ewater", false); // Read/Write mode
+  if (!preferences.begin("ewater", false)) { // Read/Write mode
+    DEBUG_PRINTLN("⚠️ NVS write open failed. Config not saved.");
+    return;
+  }
+  bool saveOk = true;
+
+  auto putStrChecked = [&](const char *key, const char *value) {
+    size_t written = preferences.putString(key, value);
+    if (value && value[0] != '\0' && written == 0) {
+      saveOk = false;
+    }
+  };
+
+  auto putFixedChecked = [&](size_t written, size_t expected) {
+    if (written != expected) {
+      saveOk = false;
+    }
+  };
 
   // WiFi
-  preferences.putString("wifi_ssid", deviceConfig.wifi_ssid);
-  preferences.putString("wifi_pass", deviceConfig.wifi_password);
+  putStrChecked("wifi_ssid", deviceConfig.wifi_ssid);
+  putStrChecked("wifi_pass", deviceConfig.wifi_password);
 
   // MQTT
-  preferences.putString("mqtt_broker", deviceConfig.mqtt_broker);
-  preferences.putInt("mqtt_port", deviceConfig.mqtt_port);
-  preferences.putString("mqtt_user", deviceConfig.mqtt_username);
-  preferences.putString("mqtt_pass", deviceConfig.mqtt_password);
-  preferences.putString("device_id", deviceConfig.device_id);
-  preferences.putString("api_secret", deviceConfig.api_secret);
-  preferences.putBool("req_signed", deviceConfig.requireSignedMessages);
-  preferences.putBool("allow_netcfg", deviceConfig.allowRemoteNetworkConfig);
+  putStrChecked("mqtt_broker", deviceConfig.mqtt_broker);
+  putFixedChecked(preferences.putInt("mqtt_port", deviceConfig.mqtt_port),
+                  sizeof(int32_t));
+  putStrChecked("mqtt_user", deviceConfig.mqtt_username);
+  putStrChecked("mqtt_pass", deviceConfig.mqtt_password);
+  putStrChecked("device_id", deviceConfig.device_id);
+  putStrChecked("api_secret", deviceConfig.api_secret);
+  putFixedChecked(
+      preferences.putBool("req_signed", deviceConfig.requireSignedMessages),
+      sizeof(uint8_t));
+  putFixedChecked(
+      preferences.putBool("allow_netcfg", deviceConfig.allowRemoteNetworkConfig),
+      sizeof(uint8_t));
 
   // Vending Settings
-  preferences.putInt("price", deviceConfig.pricePerLiter);
-  preferences.putULong("sess_timeout", deviceConfig.sessionTimeout);
-  preferences.putULong("free_cooldown", deviceConfig.freeWaterCooldown);
-  preferences.putFloat("free_amount", deviceConfig.freeWaterAmount);
-  preferences.putFloat("pulses", deviceConfig.pulsesPerLiter);
-  preferences.putInt("tds_thresh", deviceConfig.tdsThreshold);
-  preferences.putFloat("tds_temp", deviceConfig.tdsTemperatureC);
-  preferences.putFloat("tds_calib", deviceConfig.tdsCalibrationFactor);
-  preferences.putBool("enable_free", deviceConfig.enableFreeWater);
-  preferences.putBool("relay_active_high", deviceConfig.relayActiveHigh);
-  preferences.putInt("cash_pulse", deviceConfig.cashPulseValue);
-  preferences.putULong("cash_gap", deviceConfig.cashPulseGapMs);
+  putFixedChecked(preferences.putInt("price", deviceConfig.pricePerLiter),
+                  sizeof(int32_t));
+  putFixedChecked(
+      preferences.putULong("sess_timeout", deviceConfig.sessionTimeout),
+      sizeof(uint32_t));
+  putFixedChecked(preferences.putFloat("pulses", deviceConfig.pulsesPerLiter),
+                  sizeof(float));
+  putFixedChecked(preferences.putInt("tds_thresh", deviceConfig.tdsThreshold),
+                  sizeof(int32_t));
+  putFixedChecked(preferences.putFloat("tds_temp", deviceConfig.tdsTemperatureC),
+                  sizeof(float));
+  putFixedChecked(
+      preferences.putFloat("tds_calib", deviceConfig.tdsCalibrationFactor),
+      sizeof(float));
+  putFixedChecked(
+      preferences.putBool("relay_active_high", deviceConfig.relayActiveHigh),
+      sizeof(uint8_t));
+  putFixedChecked(preferences.putInt("cash_pulse", deviceConfig.cashPulseValue),
+                  sizeof(int32_t));
+  putFixedChecked(preferences.putULong("cash_gap", deviceConfig.cashPulseGapMs),
+                  sizeof(uint32_t));
 
   // Intervals
-  preferences.putULong("pay_interval", deviceConfig.paymentCheckInterval);
-  preferences.putULong("disp_interval", deviceConfig.displayUpdateInterval);
-  preferences.putULong("tds_interval", deviceConfig.tdsCheckInterval);
-  preferences.putULong("hb_interval", deviceConfig.heartbeatInterval);
+  putFixedChecked(
+      preferences.putULong("pay_interval", deviceConfig.paymentCheckInterval),
+      sizeof(uint32_t));
+  putFixedChecked(
+      preferences.putULong("disp_interval", deviceConfig.displayUpdateInterval),
+      sizeof(uint32_t));
+  putFixedChecked(
+      preferences.putULong("tds_interval", deviceConfig.tdsCheckInterval),
+      sizeof(uint32_t));
+  putFixedChecked(
+      preferences.putULong("hb_interval", deviceConfig.heartbeatInterval),
+      sizeof(uint32_t));
 
   // Power Management
-  preferences.putBool("enable_ps", deviceConfig.enablePowerSave);
-  preferences.putInt("sleep_start", deviceConfig.deepSleepStartHour);
-  preferences.putInt("sleep_end", deviceConfig.deepSleepEndHour);
+  putFixedChecked(preferences.putBool("enable_ps", deviceConfig.enablePowerSave),
+                  sizeof(uint8_t));
+  putFixedChecked(preferences.putInt("sleep_start", deviceConfig.deepSleepStartHour),
+                  sizeof(int32_t));
+  putFixedChecked(preferences.putInt("sleep_end", deviceConfig.deepSleepEndHour),
+                  sizeof(int32_t));
 
   // Fleet Management
-  preferences.putString("group_id", deviceConfig.groupId);
+  putStrChecked("group_id", deviceConfig.groupId);
 
   // Meta
-  preferences.putInt("cfg_version", deviceConfig.configVersion);
-  preferences.putBool("configured", deviceConfig.configured);
-  preferences.putBool("has_config", true);
+  putFixedChecked(preferences.putInt("cfg_version", deviceConfig.configVersion),
+                  sizeof(int32_t));
+  putFixedChecked(preferences.putBool("configured", deviceConfig.configured),
+                  sizeof(uint8_t));
+  putFixedChecked(preferences.putBool("has_config", true), sizeof(uint8_t));
 
   preferences.end();
+
+  if (!saveOk) {
+    DEBUG_PRINTLN("⚠️ Config save completed with write mismatches.");
+  }
 
   rememberSavedSnapshot();
   pendingConfigSave = false;
@@ -376,12 +420,6 @@ void printCurrentConfig() {
   Serial.print("  Session Timeout: ");
   Serial.print(deviceConfig.sessionTimeout / 1000);
   Serial.println(" sec");
-  Serial.print("  Free Water Cooldown: ");
-  Serial.print(deviceConfig.freeWaterCooldown / 1000);
-  Serial.println(" sec");
-  Serial.print("  Free Water Amount: ");
-  Serial.print(deviceConfig.freeWaterAmount * 1000.0f, 0);
-  Serial.println(" ml");
   Serial.print("  Pulses per Liter: ");
   Serial.println(deviceConfig.pulsesPerLiter, 2);
   Serial.print("  TDS Threshold: ");
@@ -392,8 +430,6 @@ void printCurrentConfig() {
   Serial.println(" C");
   Serial.print("  TDS Calibration: ");
   Serial.println(deviceConfig.tdsCalibrationFactor, 3);
-  Serial.print("  Free Water: ");
-  Serial.println(deviceConfig.enableFreeWater ? "Enabled" : "Disabled");
   Serial.print("  Relay Active High: ");
   Serial.println(deviceConfig.relayActiveHigh ? "YES" : "NO");
   Serial.print("  Cash Pulse Value: ");

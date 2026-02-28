@@ -19,11 +19,7 @@ float sessionStartBalance = 0.0;
 volatile unsigned long flowPulseCount = 0;
 float lastDispensedLiters = 0.0;
 
-float freeWaterDispensed = 0.0;
-bool freeWaterUsed = false;
-
 unsigned long lastSessionActivity = 0;
-unsigned long freeWaterAvailableTime = 0;
 static SystemState pausedFromState = IDLE;
 static float pendingDispenseCost = 0.0f;
 static unsigned long lastBusyStartHintMs = 0;
@@ -38,10 +34,7 @@ void initStateMachine() {
   sessionStartBalance = 0.0;
   flowPulseCount = 0;
   lastDispensedLiters = 0.0;
-  freeWaterDispensed = 0.0;
-  freeWaterUsed = false;
   lastSessionActivity = millis();
-  freeWaterAvailableTime = millis() + config.freeWaterCooldown;
   pausedFromState = IDLE;
   pendingDispenseCost = 0.0f;
   lastBusyStartHintMs = 0;
@@ -62,23 +55,7 @@ void resetFlowCounters() {
 // ============================================
 // APPLY CONFIG EFFECTS (Runtime)
 // ============================================
-void applyConfigStateEffects() {
-  if (!config.enableFreeWater) {
-    if (currentState == FREE_WATER) {
-      currentState = IDLE;
-      setRelay(false);
-      publishLog("FREE_WATER", "Disabled");
-      publishStatus();
-    }
-    freeWaterUsed = true;
-    return;
-  }
-
-  if (currentState == IDLE) {
-    freeWaterUsed = false;
-    freeWaterAvailableTime = millis() + config.freeWaterCooldown;
-  }
-}
+void applyConfigStateEffects() {}
 
 // ============================================
 // SESSION TIMEOUT HANDLER
@@ -105,10 +82,6 @@ void handleSessionTimeout() {
 
   setRelay(false); // Close valve
 
-  // Start free water timer
-  freeWaterAvailableTime = millis() + config.freeWaterCooldown;
-  freeWaterUsed = false;
-
   publishStatus();
 }
 
@@ -123,6 +96,7 @@ void handleStartButton() {
     if (balance > 0) {
       currentState = DISPENSING;
       resetFlowCounters();
+      totalDispensedLiters = 0.0f;
       sessionStartBalance = balance;
       pendingDispenseCost = 0.0f;
       setRelay(true);
@@ -130,19 +104,9 @@ void handleStartButton() {
       // Dispense started
       publishLog("DISPENSE", "Started");
       publishStatus();
-    } else if (config.enableFreeWater && millis() >= freeWaterAvailableTime &&
-               !freeWaterUsed) {
-      currentState = FREE_WATER;
-      freeWaterDispensed = 0.0;
-      resetFlowCounters();
-      setRelay(true);
-
-      // Free water started
-      publishLog("FREE_WATER", "Started");
-      publishStatus();
     } else {
       // Feedback for user why start didn't work
-      showTemporaryMessage("PUL KIRITING", "Yoki kuting...");
+      showTemporaryMessage("PUL KIRITING", "");
     }
     break;
 
@@ -150,6 +114,7 @@ void handleStartButton() {
     if (balance > 0) {
       currentState = DISPENSING;
       resetFlowCounters();
+      totalDispensedLiters = 0.0f;
       sessionStartBalance = balance;
       pendingDispenseCost = 0.0f;
       setRelay(true);
@@ -161,22 +126,6 @@ void handleStartButton() {
     break;
 
   case PAUSED:
-    // Resume the correct mode (paid/free) based on what was paused.
-    if (pausedFromState == FREE_WATER) {
-      if (config.enableFreeWater && !freeWaterUsed &&
-          freeWaterDispensed < config.freeWaterAmount) {
-        currentState = FREE_WATER;
-        resetFlowCounters();
-        setRelay(true);
-
-        pausedFromState = IDLE;
-        publishLog("FREE_WATER", "Resumed");
-        publishStatus();
-        break;
-      }
-      // Free water no longer valid, fall back to paid dispensing if possible.
-    }
-
     if (balance > 0) {
       currentState = DISPENSING;
       resetFlowCounters();
@@ -192,7 +141,6 @@ void handleStartButton() {
     break;
 
   case DISPENSING:
-  case FREE_WATER:
     // START is intentionally ignored while water is already running.
     // Throttle this hint to avoid I2C spam when user taps rapidly.
     if (millis() - lastBusyStartHintMs >= 1500UL) {
@@ -212,7 +160,7 @@ void handleStartButton() {
 void handlePauseButton() {
   resetSessionTimer();
 
-  if (currentState == DISPENSING || currentState == FREE_WATER) {
+  if (currentState == DISPENSING) {
     const SystemState prevState = currentState;
     pausedFromState = prevState;
     currentState = PAUSED;
@@ -220,13 +168,8 @@ void handlePauseButton() {
 
     DEBUG_PRINTLN("PAUSE button pressed - Relay OFF");
     char msg[32];
-    if (prevState == DISPENSING) {
-      snprintf(msg, sizeof(msg), "%.2f", totalDispensedLiters);
-      publishLog("PAUSE", msg);
-    } else {
-      snprintf(msg, sizeof(msg), "%.2f", freeWaterDispensed);
-      publishLog("PAUSE_FREE", msg);
-    }
+    snprintf(msg, sizeof(msg), "%.2f", totalDispensedLiters);
+    publishLog("PAUSE", msg);
     publishStatus();
   }
 }
@@ -285,35 +228,6 @@ void processFlowSensor() {
       } else {
         // Normal deduction
         balance -= cost;
-      }
-
-    } else if (currentState == FREE_WATER) {
-      freeWaterDispensed += litersDiff;
-
-      if (freeWaterDispensed >= config.freeWaterAmount) {
-        freeWaterUsed = true;
-        freeWaterAvailableTime = millis() + config.freeWaterCooldown;
-
-        if (balance > 0) {
-          // Cash was inserted during free water - continue directly as paid
-          // dispensing so relay stays ON and flow is billed immediately.
-          currentState = DISPENSING;
-          sessionStartBalance = balance;
-          // Reset flow counters for paid dispensing
-          resetFlowCounters();
-          totalDispensedLiters = 0.0;
-          pendingDispenseCost = 0.0f;
-          resetSessionTimer();
-          DEBUG_PRINTLN("💰 FREE_WATER → DISPENSING (balance available)");
-          // Relay stays ON - water continues
-        } else {
-          // No balance - go back to idle
-          currentState = IDLE;
-          setRelay(false);
-        }
-
-        publishLog("FREE_WATER", "Completed");
-        publishStatus();
       }
     }
   }

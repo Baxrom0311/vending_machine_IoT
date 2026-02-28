@@ -23,7 +23,6 @@ void updateDisplay() {}
 void displayIdle() {}
 void displayActive() {}
 void displayDispensing() {}
-void displayFreeWater() {}
 void displayPaused() {}
 void showTemporaryMessage(const char *line1, const char *line2) {}
 void setDisplayNetworkStatus(const char *message) {}
@@ -38,6 +37,9 @@ bool isRelayOn() { return false; }
 // Define UART bridge mocks used by mqtt_handler config sync path
 void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs) {}
 bool isPaymentEspConnected() { return false; }
+uint32_t getUartParseErrorCount() { return 0; }
+uint32_t getUartFrameDropCount() { return 0; }
+void flushUartReceiverPersistence() {}
 
 // Define WDT Mock
 #include "esp_task_wdt.h"

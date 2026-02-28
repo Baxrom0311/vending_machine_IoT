@@ -10,8 +10,7 @@ enum SystemState {
   IDLE,       // Kutish, balans = 0
   ACTIVE,     // Balans > 0, tayyor
   DISPENSING, // Suv quyish
-  PAUSED,     // Pauza
-  FREE_WATER  // Bepul 200ml
+  PAUSED      // Pauza
 };
 
 // ============================================
@@ -26,13 +25,8 @@ extern float sessionStartBalance;
 extern volatile unsigned long flowPulseCount;
 extern float lastDispensedLiters;
 
-// Free water
-extern float freeWaterDispensed;
-extern bool freeWaterUsed;
-
 // Timers
 extern unsigned long lastSessionActivity;
-extern unsigned long freeWaterAvailableTime;
 
 // ============================================
 // FUNCTIONS

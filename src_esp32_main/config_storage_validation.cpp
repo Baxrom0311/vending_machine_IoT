@@ -33,12 +33,13 @@ void validateConfig() {
     deviceConfig.sessionTimeout = 300000; // Reset to 5 min if too small
     changed = true;
   }
-  if (deviceConfig.mqtt_port <= 0) {
-    deviceConfig.mqtt_port = 1883;
+  if (deviceConfig.pulsesPerLiter < 1.0f ||
+      deviceConfig.pulsesPerLiter > 5000.0f) {
+    deviceConfig.pulsesPerLiter = 450.0f;
     changed = true;
   }
-  if (deviceConfig.freeWaterAmount < 0) {
-    deviceConfig.freeWaterAmount = 0;
+  if (deviceConfig.mqtt_port <= 0) {
+    deviceConfig.mqtt_port = 1883;
     changed = true;
   }
   if (deviceConfig.tdsCalibrationFactor <= 0.01 ||
@@ -52,6 +53,26 @@ void validateConfig() {
   }
   if (deviceConfig.cashPulseGapMs < 20 || deviceConfig.cashPulseGapMs > 1000) {
     deviceConfig.cashPulseGapMs = 600;
+    changed = true;
+  }
+  if (deviceConfig.displayUpdateInterval < 100 ||
+      deviceConfig.displayUpdateInterval > 10000) {
+    deviceConfig.displayUpdateInterval = 100;
+    changed = true;
+  }
+  if (deviceConfig.paymentCheckInterval < 200 ||
+      deviceConfig.paymentCheckInterval > 600000) {
+    deviceConfig.paymentCheckInterval = 2000;
+    changed = true;
+  }
+  if (deviceConfig.tdsCheckInterval < 1000 ||
+      deviceConfig.tdsCheckInterval > 600000) {
+    deviceConfig.tdsCheckInterval = 5000;
+    changed = true;
+  }
+  if (deviceConfig.heartbeatInterval < 5000 ||
+      deviceConfig.heartbeatInterval > 3600000) {
+    deviceConfig.heartbeatInterval = 30000;
     changed = true;
   }
   if (!deviceConfig.relayActiveHigh) {

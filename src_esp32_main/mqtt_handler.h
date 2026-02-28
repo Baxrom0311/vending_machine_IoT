@@ -25,5 +25,9 @@ void publishMQTT(const char *topic, const char *message);
 void beginNetworkApply(const DeviceConfig &previous, bool wifiChanged,
                        bool mqttChanged);
 void processNetworkApply();
+void processMqttPersistence(bool forceFlush = false);
+uint32_t getMqttReconnectAttemptCount();
+uint32_t getMqttReconnectFailureCount();
+uint32_t getMqttJsonParseErrorCount();
 
 #endif

@@ -30,6 +30,7 @@ public:
   int available() { return 0; }
   int read() { return -1; }
   size_t write(const uint8_t *buf, size_t size) { return size; }
+  void setTimeout(uint32_t timeoutSeconds) {}
   void stop() {}
 };
 

@@ -26,4 +26,9 @@ void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs);
 // Check if Payment ESP32 is connected
 bool isPaymentEspConnected();
 
+// Telemetry counters
+uint32_t getUartParseErrorCount();
+uint32_t getUartFrameDropCount();
+void flushUartReceiverPersistence();
+
 #endif

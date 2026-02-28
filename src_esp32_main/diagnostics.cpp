@@ -11,6 +11,8 @@
 #include <WiFi.h>
 
 static HealthCheck lastHealthCheck;
+static unsigned long lastFlowDiagSampleMs = 0;
+static unsigned long lastFlowDiagSampleCount = 0;
 
 // Run comprehensive hardware diagnostics
 HealthCheck runDiagnostics() {
@@ -21,12 +23,18 @@ HealthCheck runDiagnostics() {
   DEBUG_PRINTLN("Running system diagnostics...");
 
   // 1. Flow Sensor Test
-  // Check if counter is stable when idle (no false pulses)
+  // Non-blocking check: compare pulse counter against previous sample.
   if (currentState == IDLE || currentState == ACTIVE) {
-    unsigned long before = flowPulseCount;
-    delay(100);
-    unsigned long after = flowPulseCount;
-    health.flowSensorOk = (after == before); // Should be stable when idle
+    const unsigned long nowMs = millis();
+    const unsigned long pulses = flowPulseCount;
+    if (lastFlowDiagSampleMs == 0 ||
+        (nowMs - lastFlowDiagSampleMs) < 100UL) {
+      health.flowSensorOk = true; // Not enough sampling window yet
+    } else {
+      health.flowSensorOk = (pulses == lastFlowDiagSampleCount);
+    }
+    lastFlowDiagSampleMs = nowMs;
+    lastFlowDiagSampleCount = pulses;
 
     if (!health.flowSensorOk) {
       health.failureCount++;
@@ -166,10 +174,14 @@ void publishHealthReport(const HealthCheck &health) {
   if (!health.mqttOk)
     failed.add("mqtt");
 
-  String payload;
-  serializeJson(doc, payload);
+  char payload[512];
+  size_t payloadLen = serializeJson(doc, payload, sizeof(payload));
+  if (payloadLen == 0) {
+    DEBUG_PRINTLN("Diagnostics payload overflow");
+    return;
+  }
 
-  mqttClient.publish(TOPIC_DIAGNOSTICS, payload.c_str(), false);
+  mqttClient.publish(TOPIC_DIAGNOSTICS, payload, false);
   DEBUG_PRINTLN("Health report published to MQTT");
 }
 

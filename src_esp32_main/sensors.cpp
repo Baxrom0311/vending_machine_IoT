@@ -108,8 +108,10 @@ void publishTDS() {
   doc["device_id"] = deviceConfig.device_id;
   doc["tds"] = tdsPPM;
 
-  String output;
-  serializeJson(doc, output);
-
-  publishMQTT(TOPIC_TDS_OUT, output.c_str());
+  char output[128];
+  size_t outLen = serializeJson(doc, output, sizeof(output));
+  if (outLen == 0) {
+    return;
+  }
+  publishMQTT(TOPIC_TDS_OUT, output);
 }

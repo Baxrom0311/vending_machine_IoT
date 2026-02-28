@@ -113,13 +113,10 @@ void processWiFi() {
 void applyRuntimeConfig() {
   config.pricePerLiter = deviceConfig.pricePerLiter;
   config.sessionTimeout = deviceConfig.sessionTimeout;
-  config.freeWaterCooldown = deviceConfig.freeWaterCooldown;
-  config.freeWaterAmount = deviceConfig.freeWaterAmount;
   config.pulsesPerLiter = deviceConfig.pulsesPerLiter;
   config.tdsThreshold = deviceConfig.tdsThreshold;
   config.tdsTemperatureC = deviceConfig.tdsTemperatureC;
   config.tdsCalibrationFactor = deviceConfig.tdsCalibrationFactor;
-  config.enableFreeWater = deviceConfig.enableFreeWater;
   // Hardware policy: relay is fixed Active-HIGH.
   deviceConfig.relayActiveHigh = true;
   config.relayActiveHigh = true;

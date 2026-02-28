@@ -25,13 +25,10 @@ struct DeviceConfig {
   // Vending Settings
   int pricePerLiter;
   unsigned long sessionTimeout;
-  unsigned long freeWaterCooldown;
-  float freeWaterAmount;
   float pulsesPerLiter;
   int tdsThreshold;
   float tdsTemperatureC;
   float tdsCalibrationFactor;
-  bool enableFreeWater;
   bool relayActiveHigh;
   int cashPulseValue;
   unsigned long cashPulseGapMs;

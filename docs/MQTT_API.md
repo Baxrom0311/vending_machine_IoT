@@ -19,7 +19,7 @@ This document is aligned with the current implementation in:
 | Client ID | `deviceConfig.device_id` |
 | Username/Password | Optional (`mqtt_username`, `mqtt_password`) |
 | KeepAlive | 60s |
-| Socket timeout | 8s |
+| Socket timeout | 2s |
 | MQTT buffer size | 512 bytes |
 
 ## Topic Matrix
@@ -84,10 +84,7 @@ Only works if inbound config is enabled in firmware build. When enabled:
 Common accepted operational keys:
 - `pricePerLiter` / `price_per_liter`
 - `sessionTimeout` / `session_timeout` (seconds or ms)
-- `freeWaterCooldown` / `free_water_cooldown` (seconds or ms)
-- `freeWaterAmount` / `free_water_amount`
 - `tdsThreshold` / `tds_threshold`
-- `enableFreeWater`
 - `heartbeatInterval` (5000..3600000 ms)
 - `apply` (`"now"` or `"restart"`)
 
@@ -121,8 +118,7 @@ When fleet inbound is enabled:
   "state": "DISPENSING",
   "balance": 2500,
   "last_dispense": 1.42,
-  "tds": 96,
-  "free_water_available": false
+  "tds": 96
 }
 ```
 
@@ -174,8 +170,8 @@ If `requireSignedMessages=true`:
   - `auth.sig`
 
 Replay checks:
-- Payment: rejects duplicate `transaction_id`/`nonce` seen in current boot (RAM cache size 8).
-- Config/Command: persistent nonce+timestamp hash cache in NVS (ring size 16 per context).
+- Payment/Config/Command: persistent nonce+timestamp replay protection in NVS
+  (ring size 16 per context), plus payment `transaction_id` dedupe cache.
 
 Signing guidance:
 - Signed config/command canonicalization supports both camelCase and snake_case aliases.

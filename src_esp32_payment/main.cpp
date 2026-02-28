@@ -87,13 +87,17 @@ void setup() {
 void loop() {
   // Reset watchdog timer - "I'm alive!"
   esp_task_wdt_reset();
+  static unsigned long successFlashUntilMs = 0;
+  static unsigned long pendingRetryAfterMs = 0;
+  static unsigned long lastSendFailLogMs = 0;
+  const unsigned long now = millis();
 
   // Process cash pulses
   processCashPulses();
 
   // Check for pending payment
   int payment = getPendingPayment();
-  if (payment > 0) {
+  if (payment > 0 && (long)(now - pendingRetryAfterMs) >= 0) {
     PAY_MAIN_LOG_PRINT("💰 Pending Payment Detected: ");
     PAY_MAIN_LOG_PRINTLN(payment);
 
@@ -103,20 +107,24 @@ void loop() {
     if (sent) {
       clearPendingPayment();
       PAY_MAIN_LOG_PRINTLN("✅ Payment sent successfully!");
+      pendingRetryAfterMs = 0;
 
-      // Blink LED to confirm
-      digitalWrite(LED_PIN, HIGH);
-      delay(200);
-      digitalWrite(LED_PIN, LOW);
+      // Non-blocking success flash.
+      successFlashUntilMs = now + 200;
     } else {
-      PAY_MAIN_LOG_PRINTLN("❌ Failed to send payment (Main ESP offline?)");
+      // Avoid 1ms retry storm when offline buffer is full or link is down.
+      pendingRetryAfterMs = now + 500;
+      if (now - lastSendFailLogMs >= 2000) {
+        lastSendFailLogMs = now;
+        PAY_MAIN_LOG_PRINTLN("❌ Failed to queue/send payment (retrying)");
+      }
     }
   }
 
   // Send heartbeat periodically
   static unsigned long lastHb = 0;
-  if (millis() - lastHb > 2000) { // More frequent heartbeat for debug
-    lastHb = millis();
+  if (now - lastHb > 2000) { // More frequent heartbeat for debug
+    lastHb = now;
     // Serial.println("💓 Sending heartbeat..."); // Reduce spam
     sendHeartbeat();
   }
@@ -126,9 +134,11 @@ void loop() {
 
   // Status LED - solid if connected, blink if offline
   static unsigned long lastBlinkMs = 0;
-  if (!isMainEspConnected()) {
-    if (millis() - lastBlinkMs > 1000) {
-      lastBlinkMs = millis();
+  if (now < successFlashUntilMs) {
+    digitalWrite(LED_PIN, HIGH);
+  } else if (!isMainEspConnected()) {
+    if (now - lastBlinkMs > 1000) {
+      lastBlinkMs = now;
       digitalWrite(LED_PIN, !digitalRead(LED_PIN));
     }
   } else {

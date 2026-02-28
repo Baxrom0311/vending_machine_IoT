@@ -15,7 +15,6 @@
  * - SET_DEVICE_ID:name            → Set device ID
  * - SET_PRICE:amount              → Set price per liter
  * - SET_TIMEOUT:seconds           → Set session timeout
- * - SET_FREE_WATER:1|0            → Enable/disable free water
  * - SET_CASH_PULSE:value          → Cash acceptor: so'm per pulse
  * - SET_CASH_GAP:ms               → Cash acceptor: pulse gap (ms)
  * - SAVE_CONFIG                   → Save current config to EEPROM

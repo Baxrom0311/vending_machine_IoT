@@ -31,7 +31,6 @@ void updateDisplay();
 void displayIdle();
 void displayActive();
 void displayDispensing();
-void displayFreeWater();
 void displayPaused();
 void showTemporaryMessage(const char *line1, const char *line2);
 void setDisplayNetworkStatus(const char *message);

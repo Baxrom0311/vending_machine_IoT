@@ -6,6 +6,7 @@
 #include "relay_control.h"
 #include "sensors.h"
 #include "state_machine.h"
+#include "uart_receiver.h"
 #include <WiFi.h>
 #include <cstring>
 
@@ -18,26 +19,9 @@ static void copyToBuffer(char *dst, size_t dstSize, const String &src) {
   dst[n] = '\0';
 }
 
-static unsigned long normalizeSecondsOrMs(unsigned long value) {
-  if (value == 0) {
-    return value;
-  }
-  if (value <= 3600UL) {
-    return value * 1000UL;
-  }
-  return value;
-}
-
-static float normalizeFreeWaterAmount(float value) {
-  // Accept liters (<= 5.0) or ml (> 5.0)
-  if (value <= 0.0f) {
-    return 0.0f;
-  }
-  if (value > 5.0f) {
-    return value / 1000.0f;
-  }
-  return value;
-}
+static bool awaitingFactoryResetConfirm = false;
+static unsigned long factoryResetPromptMs = 0;
+static constexpr unsigned long FACTORY_RESET_CONFIRM_TIMEOUT_MS = 10000UL;
 
 // ============================================
 // INITIALIZATION
@@ -55,6 +39,14 @@ void initSerialConfig() {
 // ============================================
 void handleSerialConfig() {
   static String buffer;
+
+  if (awaitingFactoryResetConfirm &&
+      (millis() - factoryResetPromptMs) > FACTORY_RESET_CONFIRM_TIMEOUT_MS) {
+    awaitingFactoryResetConfirm = false;
+    Serial.println("TIMEOUT: Factory reset aborted");
+    Serial.println();
+  }
+
   while (Serial.available()) {
     char c = (char)Serial.read();
 
@@ -84,6 +76,24 @@ void processCommand(String cmd) {
 
   Serial.print("> ");
   Serial.println(cmd);
+
+  if (awaitingFactoryResetConfirm) {
+    awaitingFactoryResetConfirm = false;
+    if (cmdUpper == "YES") {
+      processMqttPersistence(true);
+      flushUartReceiverPersistence();
+      loadDefaultConfig();
+      saveConfigToStorage();
+      Serial.println("OK: Factory reset completed");
+      Serial.println("Device will restart in 3 seconds...");
+      delay(3000);
+      ESP.restart();
+      return;
+    }
+    Serial.println("CANCELLED: Factory reset aborted");
+    Serial.println();
+    return;
+  }
 
   // GET_CONFIG
   if (cmdUpper == "GET_CONFIG") {
@@ -230,14 +240,6 @@ void processCommand(String cmd) {
     }
   }
 
-  // SET_FREE_WATER:1|0
-  else if (cmdUpper.startsWith("SET_FREE_WATER:")) {
-    int val = cmd.substring(15).toInt();
-    deviceConfig.enableFreeWater = (val == 1);
-    Serial.print("OK: Free water ");
-    Serial.println(deviceConfig.enableFreeWater ? "enabled" : "disabled");
-  }
-
   // SET_RELAY_ACTIVE:1|0
   else if (cmdUpper.startsWith("SET_RELAY_ACTIVE:")) {
     // Hardware policy: project relay is fixed Active-HIGH.
@@ -246,34 +248,6 @@ void processCommand(String cmd) {
     // Keep valve safely closed.
     setRelay(false);
     Serial.println("OK: Relay mode fixed to ACTIVE_HIGH");
-  }
-
-  // SET_FREE_WATER_COOLDOWN:seconds|ms
-  else if (cmdUpper.startsWith("SET_FREE_WATER_COOLDOWN:")) {
-    unsigned long raw = cmd.substring(24).toInt();
-    unsigned long cooldown = normalizeSecondsOrMs(raw);
-    if (cooldown >= 60000 && cooldown <= 7200000) {
-      deviceConfig.freeWaterCooldown = cooldown;
-      Serial.print("OK: Free water cooldown set to ");
-      Serial.print(cooldown / 1000);
-      Serial.println(" seconds");
-    } else {
-      Serial.println("ERROR: Cooldown must be 60-7200 seconds");
-    }
-  }
-
-  // SET_FREE_WATER_AMOUNT:liters|ml
-  else if (cmdUpper.startsWith("SET_FREE_WATER_AMOUNT:")) {
-    float raw = cmd.substring(22).toFloat();
-    float amount = normalizeFreeWaterAmount(raw);
-    if (amount > 0.0f && amount <= 5.0f) {
-      deviceConfig.freeWaterAmount = amount;
-      Serial.print("OK: Free water amount set to ");
-      Serial.print(amount * 1000.0f, 0);
-      Serial.println(" ml");
-    } else {
-      Serial.println("ERROR: Amount must be 1-5000 ml");
-    }
   }
 
   // SET_PULSES_PER_LITER:value
@@ -355,13 +329,13 @@ void processCommand(String cmd) {
   // SET_DISPLAY_INTERVAL:ms
   else if (cmdUpper.startsWith("SET_DISPLAY_INTERVAL:")) {
     unsigned long interval = cmd.substring(21).toInt();
-    if (interval >= 50 && interval <= 10000) {
+    if (interval >= 100 && interval <= 10000) {
       deviceConfig.displayUpdateInterval = interval;
       Serial.print("OK: Display interval set to ");
       Serial.print(interval);
       Serial.println(" ms");
     } else {
-      Serial.println("ERROR: Display interval must be 50-10000 ms");
+      Serial.println("ERROR: Display interval must be 100-10000 ms");
     }
   }
 
@@ -464,31 +438,8 @@ void processCommand(String cmd) {
   else if (cmdUpper == "FACTORY_RESET") {
     Serial.println("WARNING: This will reset all settings!");
     Serial.println("Type 'YES' to confirm...");
-
-    unsigned long startTime = millis();
-    while (millis() - startTime < 10000) {
-      if (Serial.available()) {
-        String confirm = Serial.readStringUntil('\n');
-        confirm.trim();
-        String confirmUpper = confirm;
-        confirmUpper.toUpperCase();
-
-        if (confirmUpper == "YES") {
-          loadDefaultConfig();
-          saveConfigToStorage();
-          Serial.println("OK: Factory reset completed");
-          Serial.println("Device will restart in 3 seconds...");
-          delay(3000);
-          ESP.restart();
-          return;
-        } else {
-          Serial.println("CANCELLED: Factory reset aborted");
-          return;
-        }
-      }
-      delay(10);
-    }
-    Serial.println("TIMEOUT: Factory reset aborted");
+    awaitingFactoryResetConfirm = true;
+    factoryResetPromptMs = millis();
   }
 
   // GET_STATUS
@@ -499,6 +450,8 @@ void processCommand(String cmd) {
   // RESTART
   else if (cmdUpper == "RESTART") {
     Serial.println("OK: Restarting device...");
+    processMqttPersistence(true);
+    flushUartReceiverPersistence();
     delay(500);
     ESP.restart();
   }
@@ -560,8 +513,6 @@ void showHelp() {
       "  SET_PRICE:amount                 - Set price per liter (so'm)");
   Serial.println("  SET_TIMEOUT:seconds              - Set session timeout");
   Serial.println(
-      "  SET_FREE_WATER:1|0               - Enable/disable free water");
-  Serial.println(
       "  SET_RELAY_ACTIVE:1|0             - Relay mode (forced ACTIVE_HIGH)");
   Serial.println("  SET_API_SECRET:value             - Set API signing secret");
   Serial.println(
@@ -571,8 +522,6 @@ void showHelp() {
   Serial.println(
       "  SET_CASH_PULSE:value             - Cash acceptor so'm per pulse");
   Serial.println("  SET_CASH_GAP:ms                  - Cash pulse gap (ms)");
-  Serial.println("  SET_FREE_WATER_COOLDOWN:sec      - Free water cooldown");
-  Serial.println("  SET_FREE_WATER_AMOUNT:ml         - Free water amount");
   Serial.println(
       "  SET_PULSES_PER_LITER:value       - Flow sensor calibration");
   Serial.println("  SET_TDS_THRESHOLD:ppm            - TDS warning threshold");
@@ -639,9 +588,6 @@ void showStatus() {
   case PAUSED:
     Serial.println("PAUSED");
     break;
-  case FREE_WATER:
-    Serial.println("FREE_WATER");
-    break;
   }
 
   Serial.print("Balance: ");
@@ -671,6 +617,9 @@ void showStatus() {
 
   Serial.print("Free Heap: ");
   Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
+  Serial.print("Min Free Heap: ");
+  Serial.print(ESP.getMinFreeHeap());
   Serial.println(" bytes");
 
   Serial.println("==================================\n");
