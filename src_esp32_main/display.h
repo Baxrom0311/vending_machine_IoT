@@ -1,27 +1,12 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
-#include <LiquidCrystal_I2C.h>
+#include <Adafruit_ST7789.h>
 
 // ============================================
-// LCD CONFIGURATION
+// TFT OBJECT
 // ============================================
-#ifndef LCD_I2C_ADDR
-#define LCD_I2C_ADDR 0x27
-#endif
-
-#ifndef LCD_COLS
-#define LCD_COLS 20
-#endif
-
-#ifndef LCD_ROWS
-#define LCD_ROWS 4
-#endif
-
-// ============================================
-// LCD OBJECT
-// ============================================
-extern LiquidCrystal_I2C lcd;
+extern Adafruit_ST7789 lcd;
 
 // ============================================
 // FUNCTIONS

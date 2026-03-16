@@ -712,6 +712,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
                                          "pay_nonce_buf", "pay_last_ts")) {
         return;
       }
+    }
+
+    // Duplicate suppression for any message that carries transaction id/nonce.
+    if (txnId.length() > 0) {
       if (!isNewTxnId(txnId)) {
         publishLog("ERROR", "Payment duplicate txnId");
         return;

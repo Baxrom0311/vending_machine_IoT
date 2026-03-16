@@ -231,7 +231,7 @@ void loadConfigFromStorage() {
   deviceConfig.heartbeatInterval = preferences.getULong("hb_interval", 30000);
 
   // Power Management
-  deviceConfig.enablePowerSave = preferences.getBool("enable_ps", true);
+  deviceConfig.enablePowerSave = preferences.getBool("enable_ps", false);
   deviceConfig.deepSleepStartHour = preferences.getInt("sleep_start", 1);
   deviceConfig.deepSleepEndHour = preferences.getInt("sleep_end", 6);
 

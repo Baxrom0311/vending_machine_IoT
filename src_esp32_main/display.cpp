@@ -5,81 +5,92 @@
 #include "hardware.h"
 #include "mqtt_handler.h"
 #include "state_machine.h"
+#include <SPI.h>
 #include <WiFi.h>
-#include <Wire.h>
 #include <cstdio>
 #include <cstring>
-#include <new>
 
 // ============================================
-// LCD OBJECT (20x4 by default, address from build flags)
+// TFT OBJECT
 // ============================================
-LiquidCrystal_I2C lcd(LCD_I2C_ADDR, LCD_COLS, LCD_ROWS);
+Adafruit_ST7789 lcd(TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
 static bool displayReady = false;
 
 // ============================================
-// TEMPORARY MESSAGE + NETWORK STATUS
+// DISPLAY STATE
 // ============================================
-static char tempMessageLine1[LCD_COLS + 1] = {0};
-static char tempMessageLine2[LCD_COLS + 1] = {0};
+static constexpr uint8_t DISPLAY_LINE_COUNT = 4;
+static constexpr size_t DISPLAY_LINE_BUFFER_SIZE = 64;
+
+static char tempMessageLine1[DISPLAY_LINE_BUFFER_SIZE] = {0};
+static char tempMessageLine2[DISPLAY_LINE_BUFFER_SIZE] = {0};
 static unsigned long tempMessageEndTime = 0;
 static unsigned long lastTempMessageSetMs = 0;
 static char wifiStatusMessage[32] = "kutilyapti";
 
-// ============================================
-// RENDER CACHE
-// ============================================
-static char lastLines[LCD_ROWS][LCD_COLS + 1] = {{0}};
-static uint8_t lcdAddressInUse = LCD_I2C_ADDR;
+static char lastLines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUFFER_SIZE] = {{0}};
+static uint16_t lastLineColors[DISPLAY_LINE_COUNT] = {0};
+
 static unsigned long lastDisplayRecoverAttemptMs = 0;
-static unsigned long lastDisplayHealthCheckMs = 0;
 static unsigned long lastFullRefreshMs = 0;
 static SystemState lastRenderedState = IDLE;
 static bool hasRenderedState = false;
 
-static constexpr unsigned long DISPLAY_RECOVER_RETRY_MS = 800UL;
-static constexpr unsigned long DISPLAY_HEALTH_CHECK_MS = 3000UL;
+static constexpr unsigned long DISPLAY_RECOVER_RETRY_MS = 1000UL;
 static constexpr unsigned long DISPLAY_PERIODIC_FULL_REFRESH_MS =
-    5UL * 60UL * 1000UL; // 5 minutes
+    5UL * 60UL * 1000UL;
 static constexpr unsigned long DISPLAY_STATE_REFRESH_MIN_GAP_MS = 1200UL;
 static constexpr unsigned long TEMP_MESSAGE_MIN_GAP_MS = 500UL;
-static constexpr uint16_t I2C_TIMEOUT_MS = 25;
+static constexpr unsigned long DISPLAY_UPDATE_MIN_GAP_MS = 100UL;
 
-static bool probeI2cAddress(uint8_t addr) {
-  Wire.beginTransmission(addr);
-  return (Wire.endTransmission() == 0);
-}
-
-static uint8_t detectLcdAddress() {
-  // Try configured/default addresses first.
-  const uint8_t preferred[] = {LCD_I2C_ADDR, 0x27, 0x3F};
-  for (uint8_t i = 0; i < sizeof(preferred); i++) {
-    const uint8_t addr = preferred[i];
-    if (probeI2cAddress(addr)) {
-      return addr;
-    }
-  }
-
-  // Fallback scan for common PCF8574(A) ranges used by LCD backpacks.
-  for (uint8_t addr = 0x20; addr <= 0x27; addr++) {
-    if (probeI2cAddress(addr)) {
-      return addr;
-    }
-  }
-  for (uint8_t addr = 0x38; addr <= 0x3F; addr++) {
-    if (probeI2cAddress(addr)) {
-      return addr;
-    }
-  }
-
-  return 0;
-}
+static constexpr uint16_t TFT_BG_COLOR = ST77XX_BLACK;
+static constexpr uint16_t TFT_TEXT_COLOR = ST77XX_WHITE;
+static constexpr uint16_t TFT_ACCENT_COLOR = ST77XX_CYAN;
+static constexpr uint16_t TFT_OK_COLOR = ST77XX_GREEN;
+static constexpr uint16_t TFT_WARN_COLOR = ST77XX_YELLOW;
 
 // ============================================
 // HELPERS
 // ============================================
+static uint8_t textCols() {
+  if (!displayReady) {
+    return 20;
+  }
+
+  const uint16_t charWidth = 6U * static_cast<uint16_t>(TFT_TEXT_SIZE);
+  if (charWidth == 0) {
+    return 20;
+  }
+
+  uint16_t cols = lcd.width() / charWidth;
+  if (cols < 12) {
+    cols = 12;
+  }
+
+  const uint16_t maxCols = static_cast<uint16_t>(DISPLAY_LINE_BUFFER_SIZE - 1);
+  if (cols > maxCols) {
+    cols = maxCols;
+  }
+
+  return static_cast<uint8_t>(cols);
+}
+
+static uint16_t lineHeightPx() {
+  return static_cast<uint16_t>(8U * static_cast<uint16_t>(TFT_TEXT_SIZE) + 4U);
+}
+
+static uint16_t lineBandHeightPx() {
+  return static_cast<uint16_t>(lineHeightPx() +
+                               static_cast<uint16_t>(TFT_LINE_SPACING_PX));
+}
+
+static uint16_t lineY(uint8_t row) {
+  return static_cast<uint16_t>(TFT_TOP_MARGIN_PX) +
+         static_cast<uint16_t>(row) * lineBandHeightPx();
+}
+
 static void toFixedWidth(const char *src, char *out, size_t outSize) {
-  const size_t width = LCD_COLS;
+  const size_t width = textCols();
   if (outSize < width + 1) {
     return;
   }
@@ -110,151 +121,95 @@ static void copyBounded(char *dst, size_t dstSize, const char *src) {
 }
 
 static void clearRenderCache() {
-  for (uint8_t row = 0; row < LCD_ROWS; row++) {
+  for (uint8_t row = 0; row < DISPLAY_LINE_COUNT; row++) {
     memset(lastLines[row], 0, sizeof(lastLines[row]));
+    lastLineColors[row] = 0;
   }
 }
 
-static void forceFullDisplayRefresh(const char *reason, bool softReinit) {
+static void forceFullDisplayRefresh(const char *reason) {
   if (!displayReady) {
     return;
   }
-  if (softReinit) {
-    // Re-send controller init sequence to recover from occasional LCD desync.
-    lcd.init();
-    lcd.backlight();
-  }
-  lcd.clear();
+
+  lcd.fillScreen(TFT_BG_COLOR);
   clearRenderCache();
   lastFullRefreshMs = millis();
+
   if (reason && reason[0]) {
-    DEBUG_PRINT("ℹ️ LCD full refresh: ");
+    DEBUG_PRINT("Display refresh: ");
     DEBUG_PRINTLN(reason);
   }
 }
 
-static void recoverI2cBusIfStuck() {
-  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
-  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
-  delayMicroseconds(5);
+static bool initTftDriver() {
+  SPI.begin(TFT_SCLK_PIN, TFT_MISO_PIN, TFT_MOSI_PIN, TFT_CS_PIN);
 
-  // If lines are already released, no need to pulse the clock.
-  if (digitalRead(I2C_SDA_PIN) == HIGH && digitalRead(I2C_SCL_PIN) == HIGH) {
-    return;
-  }
+  lcd.init(TFT_WIDTH, TFT_HEIGHT);
+  lcd.setRotation(TFT_ROTATION);
+  lcd.setTextWrap(false);
+  lcd.setTextSize(TFT_TEXT_SIZE);
+  lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
+  lcd.fillScreen(TFT_BG_COLOR);
 
-  DEBUG_PRINTLN("⚠️ I2C bus busy, clock-unwedge...");
-
-#if defined(ARDUINO_ARCH_ESP32)
-  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
-  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
-#else
-  pinMode(I2C_SDA_PIN, OUTPUT);
-  pinMode(I2C_SCL_PIN, OUTPUT);
-#endif
-
-  // Release both lines before pulsing.
-  digitalWrite(I2C_SDA_PIN, HIGH);
-  digitalWrite(I2C_SCL_PIN, HIGH);
-  delayMicroseconds(5);
-
-  // Up to 9 clock cycles are typically enough; use 18 as an upper bound.
-  for (uint8_t i = 0; i < 18 && digitalRead(I2C_SDA_PIN) == LOW; i++) {
-    digitalWrite(I2C_SCL_PIN, LOW);
-    delayMicroseconds(6);
-    digitalWrite(I2C_SCL_PIN, HIGH);
-    delayMicroseconds(6);
-  }
-
-  // Try to generate a STOP condition.
-  digitalWrite(I2C_SDA_PIN, LOW);
-  delayMicroseconds(6);
-  digitalWrite(I2C_SCL_PIN, HIGH);
-  delayMicroseconds(6);
-  digitalWrite(I2C_SDA_PIN, HIGH);
-  delayMicroseconds(6);
-
-  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
-  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
-}
-
-static void configureI2CBus() {
-  // Release lines first, then reinitialize I2C at a conservative speed.
-  recoverI2cBusIfStuck();
-  delay(1);
-
-#if defined(ARDUINO_ARCH_ESP32)
-  Wire.end();
-  delay(1);
-#endif
-
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000);
-#if defined(ARDUINO_ARCH_ESP32)
-  Wire.setTimeOut(I2C_TIMEOUT_MS);
-#endif
-}
-
-static bool initLcdDriver(bool recoveryMode) {
-  configureI2CBus();
-
-  const uint8_t detectedAddr = detectLcdAddress();
-  if (detectedAddr == 0) {
-    if (recoveryMode) {
-      DEBUG_PRINTLN("⚠️ LCD recovery failed: I2C ACK yo'q");
-    } else {
-      DEBUG_PRINTLN("⚠️ LCD not detected on I2C bus");
-    }
+  if (lcd.width() == 0 || lcd.height() == 0) {
     displayReady = false;
     return false;
   }
 
-  lcdAddressInUse = detectedAddr;
-  if (detectedAddr != LCD_I2C_ADDR) {
-    DEBUG_PRINT("ℹ️ LCD address override: 0x");
-    DEBUG_PRINT(LCD_I2C_ADDR, HEX);
-    DEBUG_PRINT(" -> 0x");
-    DEBUG_PRINTLN(detectedAddr, HEX);
-  }
-
-  new (&lcd) LiquidCrystal_I2C(detectedAddr, LCD_COLS, LCD_ROWS);
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
   displayReady = true;
   clearRenderCache();
+  lastFullRefreshMs = millis();
   return true;
 }
 
-static void writeLineCached(uint8_t row, const char *text) {
-  if (!displayReady || row >= LCD_ROWS) {
+static void writeLineCached(uint8_t row, const char *text, uint16_t color) {
+  if (!displayReady || row >= DISPLAY_LINE_COUNT) {
     return;
   }
 
-  char fixed[LCD_COLS + 1];
+  char fixed[DISPLAY_LINE_BUFFER_SIZE];
   toFixedWidth(text, fixed, sizeof(fixed));
 
-  if (strcmp(lastLines[row], fixed) == 0) {
+  if (strcmp(lastLines[row], fixed) == 0 && lastLineColors[row] == color) {
     return;
   }
 
-  lcd.setCursor(0, row);
+  const uint16_t y = lineY(row);
+  if (y >= lcd.height()) {
+    return;
+  }
+
+  const uint16_t bandHeight = lineBandHeightPx();
+  const uint16_t remaining = static_cast<uint16_t>(lcd.height() - y);
+  const uint16_t clearHeight = (bandHeight < remaining) ? bandHeight : remaining;
+
+  lcd.fillRect(0, y, lcd.width(), clearHeight, TFT_BG_COLOR);
+  lcd.setTextColor(color, TFT_BG_COLOR);
+  lcd.setCursor(0, static_cast<int16_t>(y + 2));
   lcd.print(fixed);
-  strcpy(lastLines[row], fixed);
+  lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
+
+  snprintf(lastLines[row], sizeof(lastLines[row]), "%s", fixed);
+  lastLineColors[row] = color;
+}
+
+static uint16_t networkLineColor(const char *line) {
+  if (!line) {
+    return TFT_TEXT_COLOR;
+  }
+  if (strstr(line, "OK") != nullptr) {
+    return TFT_OK_COLOR;
+  }
+  return TFT_WARN_COLOR;
 }
 
 static void renderScreen(const char *line0, const char *line1, const char *line2,
                          const char *line3) {
-  writeLineCached(0, line0 ? line0 : "");
-  if (LCD_ROWS > 1) {
-    writeLineCached(1, line1 ? line1 : "");
-  }
-  if (LCD_ROWS > 2) {
-    writeLineCached(2, line2 ? line2 : "");
-  }
-  if (LCD_ROWS > 3) {
-    writeLineCached(3, line3 ? line3 : "");
-  }
+  writeLineCached(0, line0 ? line0 : "", TFT_ACCENT_COLOR);
+  writeLineCached(1, line1 ? line1 : "", TFT_TEXT_COLOR);
+  writeLineCached(2, line2 ? line2 : "", TFT_TEXT_COLOR);
+  writeLineCached(3, line3 ? line3 : "", networkLineColor(line3));
 }
 
 static float calculateAffordableLiters() {
@@ -273,7 +228,7 @@ static float calculateAffordableLiters() {
   return liters;
 }
 
-static void formatTopLine(char *out, size_t outSize) {
+static int clampPricePerLiter() {
   int shownPrice = config.pricePerLiter;
   if (shownPrice < 0) {
     shownPrice = 0;
@@ -281,10 +236,10 @@ static void formatTopLine(char *out, size_t outSize) {
   if (shownPrice > 9999999) {
     shownPrice = 9999999;
   }
-  snprintf(out, outSize, "Narx: %d so'm/L", shownPrice);
+  return shownPrice;
 }
 
-static void formatBalanceCapacityLine(char *out, size_t outSize) {
+static long clampBalance() {
   long shownBalance = balance;
   if (shownBalance < 0) {
     shownBalance = 0;
@@ -292,16 +247,39 @@ static void formatBalanceCapacityLine(char *out, size_t outSize) {
   if (shownBalance > 9999999L) {
     shownBalance = 9999999L;
   }
+  return shownBalance;
+}
 
-  snprintf(out, outSize, "Balans: %ld", shownBalance);
+static const char *stateLabel(SystemState state) {
+  switch (state) {
+  case IDLE:
+    return "KUTISH";
+  case ACTIVE:
+    return "TAYYOR";
+  case DISPENSING:
+    return "QUYISH";
+  case PAUSED:
+    return "PAUZA";
+  default:
+    return "NOMA'LUM";
+  }
+}
+
+static void formatTopLine(char *out, size_t outSize) {
+  snprintf(out, outSize, "%s | %d so'm/L", stateLabel(currentState),
+           clampPricePerLiter());
+}
+
+static void formatBalanceLine(char *out, size_t outSize) {
+  snprintf(out, outSize, "Balans: %ld", clampBalance());
 }
 
 static void formatRemainingWaterLine(char *out, size_t outSize) {
   const float remainingLiters = calculateAffordableLiters();
   if (currentState == DISPENSING || currentState == PAUSED) {
-    snprintf(out, outSize, "Qolgan suv:%.2fL", remainingLiters);
+    snprintf(out, outSize, "Qolgan suv: %.2fL", remainingLiters);
   } else {
-    snprintf(out, outSize, "Quyiladi:%.2fL", remainingLiters);
+    snprintf(out, outSize, "Quyiladi: %.2fL", remainingLiters);
   }
 }
 
@@ -329,13 +307,13 @@ static void formatOnlinePaymentLine(char *out, size_t outSize) {
 
 static void renderMainScreen(const char *line2Override,
                              const char *line3Override) {
-  char line0[32];
-  char line1[32];
-  char line2[32];
-  char line3[32];
+  char line0[DISPLAY_LINE_BUFFER_SIZE];
+  char line1[DISPLAY_LINE_BUFFER_SIZE];
+  char line2[DISPLAY_LINE_BUFFER_SIZE];
+  char line3[DISPLAY_LINE_BUFFER_SIZE];
 
   formatTopLine(line0, sizeof(line0));
-  formatBalanceCapacityLine(line1, sizeof(line1));
+  formatBalanceLine(line1, sizeof(line1));
 
   if (line2Override && line2Override[0]) {
     copyBounded(line2, sizeof(line2), line2Override);
@@ -356,7 +334,7 @@ static void renderMainScreen(const char *line2Override,
 // INITIALIZATION
 // ============================================
 void initDisplay() {
-  if (!initLcdDriver(false)) {
+  if (!initTftDriver()) {
     return;
   }
 
@@ -365,7 +343,6 @@ void initDisplay() {
   tempMessageEndTime = 0;
   lastTempMessageSetMs = 0;
   lastDisplayRecoverAttemptMs = millis();
-  lastDisplayHealthCheckMs = millis();
   lastFullRefreshMs = millis();
   hasRenderedState = false;
   lastRenderedState = currentState;
@@ -405,32 +382,17 @@ void updateDisplay() {
   if (!displayReady) {
     if (now - lastDisplayRecoverAttemptMs >= DISPLAY_RECOVER_RETRY_MS) {
       lastDisplayRecoverAttemptMs = now;
-      DEBUG_PRINTLN("⚠️ LCD offline, recover attempt...");
-      if (initLcdDriver(true)) {
-        DEBUG_PRINTLN("✓ LCD recovered");
-        lastFullRefreshMs = millis();
+      if (initTftDriver()) {
         hasRenderedState = false;
         lastRenderedState = currentState;
-        renderMainScreen("Ishlashda davom...", "Onlayn: tekshirilmoqda");
+        renderMainScreen("Display tiklandi", "Onlayn: tekshirilmoqda");
       }
     }
     return;
   }
 
-  if (now - lastDisplayHealthCheckMs >= DISPLAY_HEALTH_CHECK_MS) {
-    lastDisplayHealthCheckMs = now;
-    if (!probeI2cAddress(lcdAddressInUse)) {
-      DEBUG_PRINTLN("⚠️ LCD ACK yo'q, qayta ulanyapti...");
-      displayReady = false;
-    }
-  }
-
-  if (!displayReady) {
-    return;
-  }
-
   static unsigned long lastUpdateMs = 0;
-  if (now - lastUpdateMs < 100) {
+  if (now - lastUpdateMs < DISPLAY_UPDATE_MIN_GAP_MS) {
     return;
   }
   lastUpdateMs = now;
@@ -441,14 +403,13 @@ void updateDisplay() {
       (now - lastFullRefreshMs) >= DISPLAY_PERIODIC_FULL_REFRESH_MS;
 
   if (stateChanged) {
-    // Avoid aggressive clear() storms when buttons are spammed.
     if ((now - lastFullRefreshMs) >= DISPLAY_STATE_REFRESH_MIN_GAP_MS) {
-      forceFullDisplayRefresh("state change", false);
+      forceFullDisplayRefresh("state change");
     } else {
-      clearRenderCache(); // force redraw without expensive lcd.clear()
+      clearRenderCache();
     }
   } else if (periodicRefreshDue) {
-    forceFullDisplayRefresh("periodic scrub", true);
+    forceFullDisplayRefresh("periodic scrub");
   }
 
   if (now < tempMessageEndTime && tempMessageLine1[0] != '\0') {
@@ -485,11 +446,9 @@ void updateDisplay() {
 }
 
 // ============================================
-// STATE DISPLAYS (optimized for 20x4)
+// STATE DISPLAYS
 // ============================================
-void displayIdle() {
-  renderMainScreen(nullptr, nullptr);
-}
+void displayIdle() { renderMainScreen(nullptr, nullptr); }
 
 void displayActive() { renderMainScreen(nullptr, nullptr); }
 

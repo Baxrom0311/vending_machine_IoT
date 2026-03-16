@@ -217,13 +217,13 @@ void processCommand(String cmd) {
   // SET_PRICE:amount
   else if (cmdUpper.startsWith("SET_PRICE:")) {
     int price = cmd.substring(10).toInt();
-    if (price > 0 && price <= 100000) {
+    if (price >= 100 && price <= 100000) {
       deviceConfig.pricePerLiter = price;
       Serial.print("OK: Price set to ");
       Serial.print(price);
       Serial.println(" so'm per liter");
     } else {
-      Serial.println("ERROR: Price must be 1-100000");
+      Serial.println("ERROR: Price must be 100-100000");
     }
   }
 
@@ -355,13 +355,13 @@ void processCommand(String cmd) {
   // SET_HEARTBEAT_INTERVAL:seconds|ms
   else if (cmdUpper.startsWith("SET_HEARTBEAT_INTERVAL:")) {
     unsigned long interval = cmd.substring(23).toInt();
-    if (interval >= 1000 && interval <= 3600000) {
+    if (interval >= 5000 && interval <= 3600000) {
       deviceConfig.heartbeatInterval = interval;
       Serial.print("OK: Heartbeat interval set to ");
       Serial.print(interval);
       Serial.println(" ms");
     } else {
-      Serial.println("ERROR: Heartbeat interval must be 1000-3600000 ms");
+      Serial.println("ERROR: Heartbeat interval must be 5000-3600000 ms");
     }
   }
 
