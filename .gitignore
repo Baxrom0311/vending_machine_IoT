@@ -21,7 +21,7 @@ Thumbs.db
 # Python
 **/__pycache__/
 *.pyc
-
+*/dist/
 # Node.js (desktop-app)
 node_modules/
 npm-debug.log
