@@ -48,12 +48,54 @@ static constexpr uint16_t TFT_TEXT_COLOR = ST77XX_WHITE;
 static constexpr uint16_t TFT_ACCENT_COLOR = ST77XX_CYAN;
 static constexpr uint16_t TFT_OK_COLOR = ST77XX_GREEN;
 static constexpr uint16_t TFT_WARN_COLOR = ST77XX_YELLOW;
+static constexpr uint16_t TFT_BORDER_COLOR = ST77XX_WHITE;
+static constexpr uint8_t TFT_BORDER_THICKNESS = 2;
+static constexpr uint8_t TFT_CONTENT_PAD_X = 4;
+static constexpr uint8_t TFT_FOOTER_TEXT_SIZE = 4;
+static constexpr uint16_t TFT_FOOTER_COLOR = ST77XX_WHITE;
+static constexpr uint16_t TFT_FOOTER_BOTTOM_MARGIN_PX = 8;
+static constexpr char TFT_FOOTER_TEXT[] = "ECOCOMPANY";
+
+static char lastFooterText[24] = {0};
+static uint16_t lastFooterColor = 0;
 
 // ============================================
 // HELPERS
 // ============================================
-static uint8_t textCols() {
+static uint16_t contentX() {
+  return static_cast<uint16_t>(TFT_BORDER_THICKNESS + TFT_CONTENT_PAD_X);
+}
+
+static uint16_t contentWidthPx() {
   if (!displayReady) {
+    return TFT_WIDTH;
+  }
+  const uint16_t sidePad =
+      static_cast<uint16_t>((TFT_BORDER_THICKNESS + TFT_CONTENT_PAD_X) * 2U);
+  if (lcd.width() <= sidePad) {
+    return lcd.width();
+  }
+  return static_cast<uint16_t>(lcd.width() - sidePad);
+}
+
+static void drawDisplayBorder() {
+  if (!displayReady) {
+    return;
+  }
+  for (uint8_t i = 0; i < TFT_BORDER_THICKNESS; i++) {
+    const uint16_t x = i;
+    const uint16_t y = i;
+    const uint16_t w = lcd.width() - static_cast<uint16_t>(2U * i);
+    const uint16_t h = lcd.height() - static_cast<uint16_t>(2U * i);
+    if (w == 0 || h == 0) {
+      break;
+    }
+    lcd.drawRect(x, y, w, h, TFT_BORDER_COLOR);
+  }
+}
+
+static uint8_t textCols() {
+  if (!displayReady || TFT_TEXT_SIZE <= 0) {
     return 20;
   }
 
@@ -62,9 +104,9 @@ static uint8_t textCols() {
     return 20;
   }
 
-  uint16_t cols = lcd.width() / charWidth;
-  if (cols < 12) {
-    cols = 12;
+  uint16_t cols = contentWidthPx() / charWidth;
+  if (cols < 6) {
+    cols = 6;
   }
 
   const uint16_t maxCols = static_cast<uint16_t>(DISPLAY_LINE_BUFFER_SIZE - 1);
@@ -85,8 +127,27 @@ static uint16_t lineBandHeightPx() {
 }
 
 static uint16_t lineY(uint8_t row) {
-  return static_cast<uint16_t>(TFT_TOP_MARGIN_PX) +
+  return static_cast<uint16_t>(TFT_TOP_MARGIN_PX + TFT_BORDER_THICKNESS) +
          static_cast<uint16_t>(row) * lineBandHeightPx();
+}
+
+static uint16_t footerHeightPx() {
+  return static_cast<uint16_t>(8U * static_cast<uint16_t>(TFT_FOOTER_TEXT_SIZE) +
+                               4U);
+}
+
+static uint16_t footerY() {
+  if (!displayReady) {
+    return 0;
+  }
+
+  const uint16_t h = footerHeightPx();
+  const uint16_t bottomSafe = static_cast<uint16_t>(TFT_BORDER_THICKNESS) +
+                              static_cast<uint16_t>(TFT_FOOTER_BOTTOM_MARGIN_PX);
+  if (lcd.height() <= h + bottomSafe) {
+    return static_cast<uint16_t>(TFT_BORDER_THICKNESS);
+  }
+  return static_cast<uint16_t>(lcd.height() - h - bottomSafe);
 }
 
 static void toFixedWidth(const char *src, char *out, size_t outSize) {
@@ -125,6 +186,46 @@ static void clearRenderCache() {
     memset(lastLines[row], 0, sizeof(lastLines[row]));
     lastLineColors[row] = 0;
   }
+  memset(lastFooterText, 0, sizeof(lastFooterText));
+  lastFooterColor = 0;
+}
+
+static void renderFooterBrand() {
+  if (!displayReady) {
+    return;
+  }
+
+  const uint16_t y = footerY();
+  const uint16_t h = footerHeightPx();
+  const uint16_t textXMin = contentX();
+  const uint16_t textAreaW = contentWidthPx();
+
+  const uint16_t textWidth =
+      static_cast<uint16_t>(strlen(TFT_FOOTER_TEXT) * 6U *
+                            static_cast<uint16_t>(TFT_FOOTER_TEXT_SIZE));
+  int32_t x = (static_cast<int32_t>(lcd.width()) -
+               static_cast<int32_t>(textWidth)) /
+              2;
+  if (x < static_cast<int16_t>(textXMin)) {
+    x = textXMin;
+  }
+
+  if (strcmp(lastFooterText, TFT_FOOTER_TEXT) == 0 &&
+      lastFooterColor == TFT_FOOTER_COLOR) {
+    return;
+  }
+
+  lcd.fillRect(textXMin, y, textAreaW, h, TFT_BG_COLOR);
+  lcd.setTextSize(TFT_FOOTER_TEXT_SIZE);
+  lcd.setTextColor(TFT_FOOTER_COLOR, TFT_BG_COLOR);
+  lcd.setCursor(static_cast<int16_t>(x), static_cast<int16_t>(y + 2));
+  lcd.print(TFT_FOOTER_TEXT);
+
+  lcd.setTextSize(TFT_TEXT_SIZE);
+  lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
+
+  snprintf(lastFooterText, sizeof(lastFooterText), "%s", TFT_FOOTER_TEXT);
+  lastFooterColor = TFT_FOOTER_COLOR;
 }
 
 static void forceFullDisplayRefresh(const char *reason) {
@@ -133,6 +234,7 @@ static void forceFullDisplayRefresh(const char *reason) {
   }
 
   lcd.fillScreen(TFT_BG_COLOR);
+  drawDisplayBorder();
   clearRenderCache();
   lastFullRefreshMs = millis();
 
@@ -158,6 +260,7 @@ static bool initTftDriver() {
   }
 
   displayReady = true;
+  drawDisplayBorder();
   clearRenderCache();
   lastFullRefreshMs = millis();
   return true;
@@ -184,9 +287,11 @@ static void writeLineCached(uint8_t row, const char *text, uint16_t color) {
   const uint16_t remaining = static_cast<uint16_t>(lcd.height() - y);
   const uint16_t clearHeight = (bandHeight < remaining) ? bandHeight : remaining;
 
-  lcd.fillRect(0, y, lcd.width(), clearHeight, TFT_BG_COLOR);
+  const uint16_t textX = contentX();
+  const uint16_t textW = contentWidthPx();
+  lcd.fillRect(textX, y, textW, clearHeight, TFT_BG_COLOR);
   lcd.setTextColor(color, TFT_BG_COLOR);
-  lcd.setCursor(0, static_cast<int16_t>(y + 2));
+  lcd.setCursor(static_cast<int16_t>(textX), static_cast<int16_t>(y + 2));
   lcd.print(fixed);
   lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
 
@@ -210,6 +315,7 @@ static void renderScreen(const char *line0, const char *line1, const char *line2
   writeLineCached(1, line1 ? line1 : "", TFT_TEXT_COLOR);
   writeLineCached(2, line2 ? line2 : "", TFT_TEXT_COLOR);
   writeLineCached(3, line3 ? line3 : "", networkLineColor(line3));
+  renderFooterBrand();
 }
 
 static float calculateAffordableLiters() {
@@ -266,12 +372,11 @@ static const char *stateLabel(SystemState state) {
 }
 
 static void formatTopLine(char *out, size_t outSize) {
-  snprintf(out, outSize, "%s | %d so'm/L", stateLabel(currentState),
-           clampPricePerLiter());
+  snprintf(out, outSize, "Narx: %d so'm/L", clampPricePerLiter());
 }
 
 static void formatBalanceLine(char *out, size_t outSize) {
-  snprintf(out, outSize, "Balans: %ld", clampBalance());
+  snprintf(out, outSize, "Balans:%ld", clampBalance());
 }
 
 static void formatRemainingWaterLine(char *out, size_t outSize) {
@@ -284,25 +389,9 @@ static void formatRemainingWaterLine(char *out, size_t outSize) {
 }
 
 static void formatOnlinePaymentLine(char *out, size_t outSize) {
-  if (!isConfigured()) {
-    snprintf(out, outSize, "Onlayn: sozlanmagan");
-    return;
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    const bool connecting =
-        (strstr(wifiStatusMessage, "Connecting") != nullptr) ||
-        (strstr(wifiStatusMessage, "connecting") != nullptr);
-    snprintf(out, outSize, connecting ? "Onlayn: ulanmoqda"
-                                      : "Onlayn: WiFi yo'q");
-    return;
-  }
-
-  if (mqttClient.connected()) {
-    snprintf(out, outSize, "Onlayn to'lov: OK");
-  } else {
-    snprintf(out, outSize, "Onlayn: server kut.");
-  }
+  const bool clickOk =
+      isConfigured() && (WiFi.status() == WL_CONNECTED) && mqttClient.connected();
+  snprintf(out, outSize, clickOk ? "Click: ishladi" : "Click: ishlamadi");
 }
 
 static void renderMainScreen(const char *line2Override,

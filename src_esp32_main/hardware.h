@@ -14,6 +14,7 @@
 // SPI TFT DISPLAY (2.0" 7-pin, ST7789-compatible)
 // User wiring:
 //   SDA(MOSI)=GPIO23, SCL(SCLK)=GPIO18, RST=GPIO33, DC=GPIO27, CS=GPIO5
+//   Relay=GPIO19, TDS=GPIO34, Flow=GPIO32, Start=GPIO25, Pause=GPIO26
 // ============================================
 #ifndef TFT_MOSI_PIN
 #define TFT_MOSI_PIN 23
@@ -52,7 +53,7 @@
 #endif
 
 #ifndef TFT_TEXT_SIZE
-#define TFT_TEXT_SIZE 2
+#define TFT_TEXT_SIZE 3
 #endif
 
 #ifndef TFT_TOP_MARGIN_PX
@@ -67,7 +68,7 @@
 // SENSORS
 // ============================================
 #ifndef TDS_PIN
-#define TDS_PIN 33 // Analog TDS sensor (ADC1_CH5)
+#define TDS_PIN 34 // Analog TDS sensor (ADC1_CH6, input-only)
 #endif
 
 #ifndef FLOW_SENSOR_PIN
@@ -79,7 +80,7 @@
 // CONTROLS
 // ============================================
 #ifndef RELAY_PIN
-#define RELAY_PIN 18 // Solenoid valve relay (ACTIVE_HIGH in firmware)
+#define RELAY_PIN 19 // Solenoid valve relay (ACTIVE_HIGH in firmware)
 #endif
 
 #ifndef START_BUTTON_PIN
