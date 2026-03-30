@@ -17,7 +17,6 @@ WiFiClass WiFi;
 // Define Display Mock
 #include "display.h"
 LiquidCrystal_I2C lcd;
-TFT_eSPI tft;
 void initDisplay() {}
 void updateDisplay() {}
 void displayIdle() {}
@@ -26,6 +25,8 @@ void displayDispensing() {}
 void displayPaused() {}
 void showTemporaryMessage(const char *line1, const char *line2) {}
 void setDisplayNetworkStatus(const char *message) {}
+void scheduleDisplayReinit(unsigned long quietMs) {}
+bool isDisplayReady() { return true; }
 void displayStatus() {}
 void displayError(const char *msg) {}
 

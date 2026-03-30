@@ -1,12 +1,7 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
-#include <Adafruit_ST7789.h>
-
-// ============================================
-// TFT OBJECT
-// ============================================
-extern Adafruit_ST7789 lcd;
+#include <stdbool.h>
 
 // ============================================
 // FUNCTIONS

@@ -26,27 +26,6 @@ public:
 
 extern LiquidCrystal_I2C lcd;
 
-// Mock TFT class
-class TFT_eSPI {
-public:
-  void fillScreen(uint32_t color) {}
-  void setCursor(int16_t x, int16_t y) {}
-  void setTextColor(uint16_t color) {}
-  void setTextSize(uint8_t size) {}
-  void print(const char *text) {}
-  void print(int n) {}
-  void print(float f) {}
-};
-
-// Colors
-#define TFT_BLACK 0x0000
-#define TFT_WHITE 0xFFFF
-#define TFT_CYAN 0x07FF
-#define TFT_RED 0xF800
-#define TFT_GREEN 0x07E0
-
-extern TFT_eSPI tft;
-
 void initDisplay();
 void updateDisplay();
 void displayIdle();
@@ -55,6 +34,8 @@ void displayDispensing();
 void displayPaused();
 void showTemporaryMessage(const char *line1, const char *line2);
 void setDisplayNetworkStatus(const char *message);
+void scheduleDisplayReinit(unsigned long quietMs = 150UL);
+bool isDisplayReady();
 void displayStatus();
 void displayError(const char *msg);
 

@@ -5,356 +5,218 @@
 #include "hardware.h"
 #include "mqtt_handler.h"
 #include "state_machine.h"
-#include <SPI.h>
+#include <LiquidCrystal_I2C.h>
 #include <WiFi.h>
+#include <Wire.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
-// ============================================
-// TFT OBJECT
-// ============================================
-Adafruit_ST7789 lcd(TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
+#ifndef LCD_I2C_ADDR_FALLBACK
+#define LCD_I2C_ADDR_FALLBACK 0x3F
+#endif
+
+#ifndef LCD_I2C_CLOCK_HZ
+#define LCD_I2C_CLOCK_HZ 100000UL
+#endif
+
+static constexpr uint8_t DISPLAY_LINE_COUNT = LCD_ROWS;
+static constexpr size_t DISPLAY_LINE_BUFFER_SIZE = LCD_COLS + 1;
+static constexpr unsigned long DISPLAY_RECOVER_RETRY_MS = 1200UL;
+static constexpr unsigned long DISPLAY_UPDATE_MIN_GAP_MS = 120UL;
+static constexpr unsigned long DISPLAY_HEALTH_PROBE_MS = 4000UL;
+static constexpr unsigned long DISPLAY_FOOTER_ROTATE_MS = 3000UL;
+static constexpr unsigned long TEMP_MESSAGE_MIN_GAP_MS = 500UL;
+static constexpr unsigned long TEMP_MESSAGE_DURATION_MS = 2400UL;
+static constexpr unsigned long LCD_REINIT_SETTLE_MS = 150UL;
+static constexpr uint8_t LCD_INIT_RETRY_COUNT = 3;
+
+static LiquidCrystal_I2C lcdPrimary(LCD_I2C_ADDR, LCD_COLS, LCD_ROWS);
+static LiquidCrystal_I2C lcdFallback(LCD_I2C_ADDR_FALLBACK, LCD_COLS, LCD_ROWS);
+static LiquidCrystal_I2C *activeLcd = &lcdPrimary;
+static uint8_t activeLcdAddress = LCD_I2C_ADDR;
+
 static bool displayReady = false;
-
-// ============================================
-// DISPLAY STATE
-// ============================================
-static constexpr uint8_t DISPLAY_LINE_COUNT = 4;
-static constexpr size_t DISPLAY_LINE_BUFFER_SIZE = 64;
-
+static char lastLines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUFFER_SIZE] = {{0}};
+static char wifiStatusMessage[DISPLAY_LINE_BUFFER_SIZE] = "WiFi tekshirilmoqda";
 static char tempMessageLine1[DISPLAY_LINE_BUFFER_SIZE] = {0};
 static char tempMessageLine2[DISPLAY_LINE_BUFFER_SIZE] = {0};
 static unsigned long tempMessageEndTime = 0;
 static unsigned long lastTempMessageSetMs = 0;
-static char wifiStatusMessage[32] = "kutilyapti";
-
-static char lastLines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUFFER_SIZE] = {{0}};
-static uint16_t lastLineColors[DISPLAY_LINE_COUNT] = {0};
-
 static unsigned long lastDisplayRecoverAttemptMs = 0;
-static unsigned long lastFullRefreshMs = 0;
+static unsigned long lastDisplayUpdateMs = 0;
+static unsigned long lastDisplayHealthProbeMs = 0;
 static unsigned long displayReinitAtMs = 0;
+static unsigned long footerRotationBaseMs = 0;
 static SystemState lastRenderedState = IDLE;
-static bool hasRenderedState = false;
 
-static constexpr unsigned long DISPLAY_RECOVER_RETRY_MS = 1000UL;
-static constexpr unsigned long DISPLAY_PERIODIC_FULL_REFRESH_MS =
-    5UL * 60UL * 1000UL;
-static constexpr unsigned long DISPLAY_STATE_REFRESH_MIN_GAP_MS = 1200UL;
-static constexpr unsigned long TEMP_MESSAGE_MIN_GAP_MS = 500UL;
-static constexpr unsigned long DISPLAY_UPDATE_MIN_GAP_MS = 100UL;
-
-static constexpr uint16_t TFT_BG_COLOR = ST77XX_BLACK;
-static constexpr uint16_t TFT_TEXT_COLOR = ST77XX_WHITE;
-static constexpr uint16_t TFT_ACCENT_COLOR = ST77XX_CYAN;
-static constexpr uint16_t TFT_OK_COLOR = ST77XX_GREEN;
-static constexpr uint16_t TFT_WARN_COLOR = ST77XX_YELLOW;
-static constexpr uint16_t TFT_BORDER_COLOR = ST77XX_WHITE;
-static constexpr uint8_t TFT_BORDER_THICKNESS = 2;
-static constexpr uint8_t TFT_CONTENT_PAD_X = 4;
-static constexpr uint8_t TFT_FOOTER_TEXT_SIZE = 4;
-static constexpr uint16_t TFT_FOOTER_COLOR = ST77XX_WHITE;
-static constexpr uint16_t TFT_FOOTER_BOTTOM_MARGIN_PX = 8;
-static constexpr char TFT_FOOTER_TEXT[] = "ECOCOMPANY";
-
-static char lastFooterText[24] = {0};
-static uint16_t lastFooterColor = 0;
-
-// ============================================
-// HELPERS
-// ============================================
-static uint16_t contentX() {
-  return static_cast<uint16_t>(TFT_BORDER_THICKNESS + TFT_CONTENT_PAD_X);
-}
-
-static uint16_t contentWidthPx() {
-  if (!displayReady) {
-    return TFT_WIDTH;
+static void clearRenderCache() {
+  for (uint8_t row = 0; row < DISPLAY_LINE_COUNT; row++) {
+    memset(lastLines[row], 0, sizeof(lastLines[row]));
   }
-  const uint16_t sidePad =
-      static_cast<uint16_t>((TFT_BORDER_THICKNESS + TFT_CONTENT_PAD_X) * 2U);
-  if (lcd.width() <= sidePad) {
-    return lcd.width();
-  }
-  return static_cast<uint16_t>(lcd.width() - sidePad);
-}
-
-static void drawDisplayBorder() {
-  if (!displayReady) {
-    return;
-  }
-  for (uint8_t i = 0; i < TFT_BORDER_THICKNESS; i++) {
-    const uint16_t x = i;
-    const uint16_t y = i;
-    const uint16_t w = lcd.width() - static_cast<uint16_t>(2U * i);
-    const uint16_t h = lcd.height() - static_cast<uint16_t>(2U * i);
-    if (w == 0 || h == 0) {
-      break;
-    }
-    lcd.drawRect(x, y, w, h, TFT_BORDER_COLOR);
-  }
-}
-
-static uint8_t textCols() {
-  if (!displayReady || TFT_TEXT_SIZE <= 0) {
-    return 20;
-  }
-
-  const uint16_t charWidth = 6U * static_cast<uint16_t>(TFT_TEXT_SIZE);
-  if (charWidth == 0) {
-    return 20;
-  }
-
-  uint16_t cols = contentWidthPx() / charWidth;
-  if (cols < 6) {
-    cols = 6;
-  }
-
-  const uint16_t maxCols = static_cast<uint16_t>(DISPLAY_LINE_BUFFER_SIZE - 1);
-  if (cols > maxCols) {
-    cols = maxCols;
-  }
-
-  return static_cast<uint8_t>(cols);
-}
-
-static uint16_t lineHeightPx() {
-  return static_cast<uint16_t>(8U * static_cast<uint16_t>(TFT_TEXT_SIZE) + 4U);
-}
-
-static uint16_t lineBandHeightPx() {
-  return static_cast<uint16_t>(lineHeightPx() +
-                               static_cast<uint16_t>(TFT_LINE_SPACING_PX));
-}
-
-static uint16_t lineY(uint8_t row) {
-  return static_cast<uint16_t>(TFT_TOP_MARGIN_PX + TFT_BORDER_THICKNESS) +
-         static_cast<uint16_t>(row) * lineBandHeightPx();
-}
-
-static uint16_t footerHeightPx() {
-  return static_cast<uint16_t>(8U * static_cast<uint16_t>(TFT_FOOTER_TEXT_SIZE) +
-                               4U);
-}
-
-static uint16_t footerY() {
-  if (!displayReady) {
-    return 0;
-  }
-
-  const uint16_t h = footerHeightPx();
-  const uint16_t bottomSafe = static_cast<uint16_t>(TFT_BORDER_THICKNESS) +
-                              static_cast<uint16_t>(TFT_FOOTER_BOTTOM_MARGIN_PX);
-  if (lcd.height() <= h + bottomSafe) {
-    return static_cast<uint16_t>(TFT_BORDER_THICKNESS);
-  }
-  return static_cast<uint16_t>(lcd.height() - h - bottomSafe);
-}
-
-static void toFixedWidth(const char *src, char *out, size_t outSize) {
-  const size_t width = textCols();
-  if (outSize < width + 1) {
-    return;
-  }
-
-  memset(out, ' ', width);
-  out[width] = '\0';
-
-  if (!src) {
-    return;
-  }
-
-  size_t n = strlen(src);
-  if (n > width) {
-    n = width;
-  }
-  memcpy(out, src, n);
 }
 
 static void copyBounded(char *dst, size_t dstSize, const char *src) {
   if (!dst || dstSize == 0) {
     return;
   }
+
   if (!src) {
     dst[0] = '\0';
     return;
   }
+
   snprintf(dst, dstSize, "%s", src);
 }
 
-static void clearRenderCache() {
-  for (uint8_t row = 0; row < DISPLAY_LINE_COUNT; row++) {
-    memset(lastLines[row], 0, sizeof(lastLines[row]));
-    lastLineColors[row] = 0;
+static void fitToLine(const char *src, char *dst) {
+  memset(dst, ' ', LCD_COLS);
+  dst[LCD_COLS] = '\0';
+  if (!src) {
+    return;
   }
-  memset(lastFooterText, 0, sizeof(lastFooterText));
-  lastFooterColor = 0;
+
+  size_t n = strlen(src);
+  if (n > LCD_COLS) {
+    n = LCD_COLS;
+  }
+  memcpy(dst, src, n);
 }
 
-static void renderFooterBrand() {
-  if (!displayReady) {
-    return;
-  }
+static void resetFooterRotation() { footerRotationBaseMs = millis(); }
 
-  const uint16_t y = footerY();
-  const uint16_t h = footerHeightPx();
-  const uint16_t textXMin = contentX();
-  const uint16_t textAreaW = contentWidthPx();
-
-  const uint16_t textWidth =
-      static_cast<uint16_t>(strlen(TFT_FOOTER_TEXT) * 6U *
-                            static_cast<uint16_t>(TFT_FOOTER_TEXT_SIZE));
-  int32_t x = (static_cast<int32_t>(lcd.width()) -
-               static_cast<int32_t>(textWidth)) /
-              2;
-  if (x < static_cast<int16_t>(textXMin)) {
-    x = textXMin;
-  }
-
-  if (strcmp(lastFooterText, TFT_FOOTER_TEXT) == 0 &&
-      lastFooterColor == TFT_FOOTER_COLOR) {
-    return;
-  }
-
-  lcd.fillRect(textXMin, y, textAreaW, h, TFT_BG_COLOR);
-  lcd.setTextSize(TFT_FOOTER_TEXT_SIZE);
-  lcd.setTextColor(TFT_FOOTER_COLOR, TFT_BG_COLOR);
-  lcd.setCursor(static_cast<int16_t>(x), static_cast<int16_t>(y + 2));
-  lcd.print(TFT_FOOTER_TEXT);
-
-  lcd.setTextSize(TFT_TEXT_SIZE);
-  lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
-
-  snprintf(lastFooterText, sizeof(lastFooterText), "%s", TFT_FOOTER_TEXT);
-  lastFooterColor = TFT_FOOTER_COLOR;
-}
-
-static void forceFullDisplayRefresh(const char *reason) {
-  if (!displayReady) {
-    return;
-  }
-
-  lcd.fillScreen(TFT_BG_COLOR);
-  drawDisplayBorder();
+static void markDisplayUnavailable(const char *reason) {
+  displayReady = false;
   clearRenderCache();
-  lastFullRefreshMs = millis();
-
-  if (reason && reason[0]) {
-    DEBUG_PRINT("Display refresh: ");
+  resetFooterRotation();
+  if (reason && reason[0] != '\0') {
+    DEBUG_PRINT("LCD unavailable: ");
     DEBUG_PRINTLN(reason);
   }
 }
 
-static bool initTftDriver() {
-  SPI.begin(TFT_SCLK_PIN, TFT_MISO_PIN, TFT_MOSI_PIN, TFT_CS_PIN);
+static void recoverI2cBus() {
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+  delayMicroseconds(10);
 
-  lcd.init(TFT_WIDTH, TFT_HEIGHT);
-  lcd.setRotation(TFT_ROTATION);
-  lcd.setTextWrap(false);
-  lcd.setTextSize(TFT_TEXT_SIZE);
-  lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
-  lcd.fillScreen(TFT_BG_COLOR);
+  if (digitalRead(I2C_SDA_PIN) == HIGH && digitalRead(I2C_SCL_PIN) == HIGH) {
+    return;
+  }
 
-  if (lcd.width() == 0 || lcd.height() == 0) {
-    displayReady = false;
+  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+
+  for (uint8_t i = 0; i < 9; i++) {
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(6);
+    digitalWrite(I2C_SCL_PIN, HIGH);
+    delayMicroseconds(6);
+  }
+
+  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(I2C_SDA_PIN, LOW);
+  delayMicroseconds(6);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(6);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(6);
+
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+}
+
+static bool probeI2cAddress(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+static bool selectActiveLcd() {
+  if (probeI2cAddress(LCD_I2C_ADDR)) {
+    activeLcd = &lcdPrimary;
+    activeLcdAddress = LCD_I2C_ADDR;
+    return true;
+  }
+
+  if (LCD_I2C_ADDR_FALLBACK != LCD_I2C_ADDR &&
+      probeI2cAddress(LCD_I2C_ADDR_FALLBACK)) {
+    activeLcd = &lcdFallback;
+    activeLcdAddress = LCD_I2C_ADDR_FALLBACK;
+    return true;
+  }
+
+  return false;
+}
+
+static bool initLcdDriver() {
+  recoverI2cBus();
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(LCD_I2C_CLOCK_HZ);
+
+  for (uint8_t attempt = 0; attempt < LCD_INIT_RETRY_COUNT; attempt++) {
+    if (!selectActiveLcd()) {
+      delay(25);
+      continue;
+    }
+
+    activeLcd->init();
+    activeLcd->backlight();
+    activeLcd->clear();
+    clearRenderCache();
+    displayReady = true;
+    lastDisplayHealthProbeMs = millis();
+    resetFooterRotation();
+
+    DEBUG_PRINT("LCD initialized at I2C 0x");
+    DEBUG_PRINTLN(activeLcdAddress, HEX);
+    return true;
+  }
+
+  markDisplayUnavailable("init failed after retries");
+  return false;
+}
+
+static bool probeActiveLcdHealth(unsigned long now) {
+  if (!displayReady) {
     return false;
   }
 
-  displayReady = true;
-  drawDisplayBorder();
-  clearRenderCache();
-  lastFullRefreshMs = millis();
+  if ((now - lastDisplayHealthProbeMs) < DISPLAY_HEALTH_PROBE_MS) {
+    return true;
+  }
+
+  lastDisplayHealthProbeMs = now;
+  if (!probeI2cAddress(activeLcdAddress)) {
+    markDisplayUnavailable("I2C probe lost");
+    return false;
+  }
+
   return true;
 }
 
-static void writeLineCached(uint8_t row, const char *text, uint16_t color) {
-  if (!displayReady || row >= DISPLAY_LINE_COUNT) {
+static void writeLineCached(uint8_t row, const char *text) {
+  if (!displayReady || !activeLcd || row >= DISPLAY_LINE_COUNT) {
     return;
   }
 
   char fixed[DISPLAY_LINE_BUFFER_SIZE];
-  toFixedWidth(text, fixed, sizeof(fixed));
+  fitToLine(text, fixed);
 
-  if (strcmp(lastLines[row], fixed) == 0 && lastLineColors[row] == color) {
+  if (strcmp(lastLines[row], fixed) == 0) {
     return;
   }
 
-  const uint16_t y = lineY(row);
-  if (y >= lcd.height()) {
-    return;
-  }
-
-  const uint16_t bandHeight = lineBandHeightPx();
-  const uint16_t remaining = static_cast<uint16_t>(lcd.height() - y);
-  const uint16_t clearHeight = (bandHeight < remaining) ? bandHeight : remaining;
-
-  const uint16_t textX = contentX();
-  const uint16_t textW = contentWidthPx();
-  lcd.fillRect(textX, y, textW, clearHeight, TFT_BG_COLOR);
-  lcd.setTextColor(color, TFT_BG_COLOR);
-  lcd.setCursor(static_cast<int16_t>(textX), static_cast<int16_t>(y + 2));
-  lcd.print(fixed);
-  lcd.setTextColor(TFT_TEXT_COLOR, TFT_BG_COLOR);
-
-  snprintf(lastLines[row], sizeof(lastLines[row]), "%s", fixed);
-  lastLineColors[row] = color;
+  activeLcd->setCursor(0, row);
+  activeLcd->print(fixed);
+  copyBounded(lastLines[row], sizeof(lastLines[row]), fixed);
 }
 
-static uint16_t networkLineColor(const char *line) {
-  if (!line) {
-    return TFT_TEXT_COLOR;
-  }
-  if (strstr(line, "OK") != nullptr) {
-    return TFT_OK_COLOR;
-  }
-  return TFT_WARN_COLOR;
-}
-
-static void renderScreen(const char *line0, const char *line1, const char *line2,
-                         const char *line3) {
-  writeLineCached(0, line0 ? line0 : "", TFT_ACCENT_COLOR);
-  writeLineCached(1, line1 ? line1 : "", TFT_TEXT_COLOR);
-  writeLineCached(2, line2 ? line2 : "", TFT_TEXT_COLOR);
-  writeLineCached(3, line3 ? line3 : "", networkLineColor(line3));
-  renderFooterBrand();
-}
-
-static float calculateAffordableLiters() {
-  if (config.pricePerLiter <= 0 || balance <= 0) {
-    return 0.0f;
-  }
-
-  float liters =
-      static_cast<float>(balance) / static_cast<float>(config.pricePerLiter);
-  if (liters < 0.0f) {
-    liters = 0.0f;
-  }
-  if (liters > 999.99f) {
-    liters = 999.99f;
-  }
-  return liters;
-}
-
-static int clampPricePerLiter() {
-  int shownPrice = config.pricePerLiter;
-  if (shownPrice < 0) {
-    shownPrice = 0;
-  }
-  if (shownPrice > 9999999) {
-    shownPrice = 9999999;
-  }
-  return shownPrice;
-}
-
-static long clampBalance() {
-  long shownBalance = balance;
-  if (shownBalance < 0) {
-    shownBalance = 0;
-  }
-  if (shownBalance > 9999999L) {
-    shownBalance = 9999999L;
-  }
-  return shownBalance;
+static void renderLines(const char *line0, const char *line1, const char *line2,
+                        const char *line3) {
+  writeLineCached(0, line0);
+  writeLineCached(1, line1);
+  writeLineCached(2, line2);
+  writeLineCached(3, line3);
 }
 
 static const char *stateLabel(SystemState state) {
@@ -372,157 +234,311 @@ static const char *stateLabel(SystemState state) {
   }
 }
 
-static void formatTopLine(char *out, size_t outSize) {
-  snprintf(out, outSize, "Narx: %d so'm/L", clampPricePerLiter());
+static float clampLiters(float liters) {
+  if (!std::isfinite(liters) || liters < 0.0f) {
+    return 0.0f;
+  }
+  if (liters > 999.9f) {
+    return 999.9f;
+  }
+  return liters;
 }
 
-static void formatBalanceLine(char *out, size_t outSize) {
-  snprintf(out, outSize, "Balans:%ld", clampBalance());
+static float calculateAffordableLiters() {
+  if (config.pricePerLiter <= 0 || balance <= 0) {
+    return 0.0f;
+  }
+
+  const float liters =
+      static_cast<float>(balance) / static_cast<float>(config.pricePerLiter);
+  return clampLiters(liters);
 }
 
-static void formatRemainingWaterLine(char *out, size_t outSize) {
-  const float remainingLiters = calculateAffordableLiters();
-  if (currentState == DISPENSING || currentState == PAUSED) {
-    snprintf(out, outSize, "Qolgan suv: %.2fL", remainingLiters);
+static void formatMoneyValue(long amount, char *out, size_t outSize) {
+  long safeAmount = amount;
+  if (safeAmount < 0) {
+    safeAmount = 0;
+  }
+
+  if (safeAmount < 1000000L) {
+    snprintf(out, outSize, "%ld", safeAmount);
+    return;
+  }
+
+  const float asThousands = static_cast<float>(safeAmount) / 1000.0f;
+  snprintf(out, outSize, "%.1fk", asThousands);
+}
+
+static void formatLitersValue(float liters, char *out, size_t outSize) {
+  const float safeLiters = clampLiters(liters);
+  if (safeLiters < 10.0f) {
+    snprintf(out, outSize, "%.2fL", safeLiters);
+  } else if (safeLiters < 100.0f) {
+    snprintf(out, outSize, "%.1fL", safeLiters);
   } else {
-    snprintf(out, outSize, "Quyiladi: %.2fL", remainingLiters);
+    snprintf(out, outSize, "%.0fL", safeLiters);
   }
 }
 
-static void formatOnlinePaymentLine(char *out, size_t outSize) {
-  const bool clickOk =
-      isConfigured() && (WiFi.status() == WL_CONNECTED) && mqttClient.connected();
-  snprintf(out, outSize, clickOk ? "Click: ishladi" : "Click: ishlamadi");
+static void normalizeNetworkStatus(const char *raw, char *out, size_t outSize) {
+  const bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  const bool mqttOk = mqttClient.connected();
+
+  if (!isConfigured()) {
+    snprintf(out, outSize, "Serial sozlang");
+    return;
+  }
+
+  if (wifiOk && mqttOk) {
+    snprintf(out, outSize, "WiFi+MQTT OK");
+    return;
+  }
+
+  if (wifiOk) {
+    if (raw && strcmp(raw, "Connected") == 0) {
+      snprintf(out, outSize, "WiFi OK MQTT kut");
+    } else {
+      snprintf(out, outSize, "WiFi OK MQTT yoq");
+    }
+    return;
+  }
+
+  if (!raw || raw[0] == '\0') {
+    snprintf(out, outSize, "WiFi ulanmayapti");
+    return;
+  }
+
+  if (strcmp(raw, "Connecting...") == 0) {
+    snprintf(out, outSize, "WiFi ulanmoqda");
+    return;
+  }
+  if (strcmp(raw, "Disconnected") == 0) {
+    snprintf(out, outSize, "WiFi uzildi");
+    return;
+  }
+  if (strcmp(raw, "Failed") == 0) {
+    snprintf(out, outSize, "WiFi xato");
+    return;
+  }
+  if (strcmp(raw, "Not configured") == 0) {
+    snprintf(out, outSize, "Serial sozlang");
+    return;
+  }
+  if (strcmp(raw, "Connected") == 0) {
+    snprintf(out, outSize, "WiFi OK");
+    return;
+  }
+
+  copyBounded(out, outSize, raw);
 }
 
-static void renderMainScreen(const char *line2Override,
-                             const char *line3Override) {
+static void buildLineState(char *out, size_t outSize) {
+  snprintf(out, outSize, "Holat:%s", stateLabel(currentState));
+}
+
+static void buildLineBalance(char *out, size_t outSize) {
+  char amount[12];
+  formatMoneyValue(balance, amount, sizeof(amount));
+  snprintf(out, outSize, "Balans:%s som", amount);
+}
+
+static void buildLineIdleHint(char *out, size_t outSize) {
+  if (!isConfigured()) {
+    snprintf(out, outSize, "Serial bilan sozlang");
+    return;
+  }
+
+  const float affordable = calculateAffordableLiters();
+  if (balance > 0) {
+    char liters[10];
+    formatLitersValue(affordable, liters, sizeof(liters));
+    snprintf(out, outSize, "Start>%s", liters);
+  } else {
+    snprintf(out, outSize, "Pul kiriting");
+  }
+}
+
+static void buildLineDispense(char *out, size_t outSize) {
+  char dispensed[10];
+  char remaining[10];
+  formatLitersValue(totalDispensedLiters, dispensed, sizeof(dispensed));
+  formatLitersValue(calculateAffordableLiters(), remaining, sizeof(remaining));
+  snprintf(out, outSize, "Q:%s Qol:%s", dispensed, remaining);
+}
+
+static void buildLineAction(char *out, size_t outSize) {
+  switch (currentState) {
+  case IDLE:
+    out[0] = '\0';
+    break;
+  case ACTIVE:
+    snprintf(out, outSize, "START bosing");
+    break;
+  case DISPENSING:
+    snprintf(out, outSize, "PAUSE bosib to'xta");
+    break;
+  case PAUSED:
+    snprintf(out, outSize, "START bosib davom");
+    break;
+  default:
+    snprintf(out, outSize, "Qayta ishga tushir");
+    break;
+  }
+}
+
+static void buildLineNetwork(char *out, size_t outSize) {
+  normalizeNetworkStatus(wifiStatusMessage, out, outSize);
+}
+
+static void chooseFooterLine(const char *action, const char *network, char *out,
+                             size_t outSize) {
+  const bool hasAction = (action && action[0] != '\0');
+  const bool hasNetwork = (network && network[0] != '\0');
+
+  if (!hasAction && !hasNetwork) {
+    out[0] = '\0';
+    return;
+  }
+  if (!hasAction) {
+    copyBounded(out, outSize, network);
+    return;
+  }
+  if (!hasNetwork) {
+    copyBounded(out, outSize, action);
+    return;
+  }
+
+  const unsigned long now = millis();
+  const bool showNetwork =
+      ((now - footerRotationBaseMs) / DISPLAY_FOOTER_ROTATE_MS) % 2U != 0U;
+  copyBounded(out, outSize, showNetwork ? network : action);
+}
+
+static void buildBootDetail(char *out, size_t outSize) {
+  if (deviceConfig.device_id[0] != '\0') {
+    snprintf(out, outSize, "ID:%s", deviceConfig.device_id);
+    return;
+  }
+  snprintf(out, outSize, "LCD 20x4 tayyor");
+}
+
+static void renderStateScreen() {
+  if (currentState != lastRenderedState) {
+    lastRenderedState = currentState;
+    resetFooterRotation();
+  }
+
   char line0[DISPLAY_LINE_BUFFER_SIZE];
   char line1[DISPLAY_LINE_BUFFER_SIZE];
   char line2[DISPLAY_LINE_BUFFER_SIZE];
   char line3[DISPLAY_LINE_BUFFER_SIZE];
+  char footerAction[DISPLAY_LINE_BUFFER_SIZE];
+  char footerNetwork[DISPLAY_LINE_BUFFER_SIZE];
 
-  formatTopLine(line0, sizeof(line0));
-  formatBalanceLine(line1, sizeof(line1));
+  buildLineState(line0, sizeof(line0));
+  buildLineBalance(line1, sizeof(line1));
 
-  if (line2Override && line2Override[0]) {
-    copyBounded(line2, sizeof(line2), line2Override);
+  if (currentState == DISPENSING || currentState == PAUSED) {
+    buildLineDispense(line2, sizeof(line2));
   } else {
-    formatRemainingWaterLine(line2, sizeof(line2));
+    buildLineIdleHint(line2, sizeof(line2));
   }
 
-  if (line3Override && line3Override[0]) {
-    copyBounded(line3, sizeof(line3), line3Override);
-  } else {
-    formatOnlinePaymentLine(line3, sizeof(line3));
-  }
-
-  renderScreen(line0, line1, line2, line3);
+  buildLineAction(footerAction, sizeof(footerAction));
+  buildLineNetwork(footerNetwork, sizeof(footerNetwork));
+  chooseFooterLine(footerAction, footerNetwork, line3, sizeof(line3));
+  renderLines(line0, line1, line2, line3);
 }
 
-// ============================================
-// INITIALIZATION
-// ============================================
-void initDisplay() {
-  if (!initTftDriver()) {
-    return;
-  }
+static void renderTempScreen() {
+  char line2[DISPLAY_LINE_BUFFER_SIZE];
+  char line3[DISPLAY_LINE_BUFFER_SIZE];
+  buildLineBalance(line2, sizeof(line2));
+  buildLineNetwork(line3, sizeof(line3));
+  renderLines(tempMessageLine1, tempMessageLine2[0] ? tempMessageLine2 : "",
+              line2, line3);
+}
 
+void initDisplay() {
+  copyBounded(wifiStatusMessage, sizeof(wifiStatusMessage),
+              "WiFi tekshirilmoqda");
   tempMessageLine1[0] = '\0';
   tempMessageLine2[0] = '\0';
   tempMessageEndTime = 0;
   lastTempMessageSetMs = 0;
-  displayReinitAtMs = 0;
   lastDisplayRecoverAttemptMs = millis();
-  lastFullRefreshMs = millis();
-  hasRenderedState = false;
+  lastDisplayUpdateMs = 0;
+  lastDisplayHealthProbeMs = 0;
+  displayReinitAtMs = 0;
   lastRenderedState = currentState;
+  resetFooterRotation();
 
-  renderMainScreen("Iltimos kuting...", "Onlayn: tekshirilmoqda");
-}
-
-// ============================================
-// DISPLAY STATUS LINE CONTROL
-// ============================================
-void setDisplayNetworkStatus(const char *message) {
-  const char *safeMessage = (message && message[0]) ? message : "N/A";
-  snprintf(wifiStatusMessage, sizeof(wifiStatusMessage), "%s", safeMessage);
-}
-
-void scheduleDisplayReinit(unsigned long quietMs) {
-  unsigned long now = millis();
-  displayReinitAtMs = now + quietMs;
-}
-
-// ============================================
-// TEMPORARY MESSAGE
-// ============================================
-void showTemporaryMessage(const char *line1, const char *line2) {
-  const unsigned long now = millis();
-  if (now - lastTempMessageSetMs < TEMP_MESSAGE_MIN_GAP_MS) {
+  if (!initLcdDriver()) {
     return;
   }
 
-  copyBounded(tempMessageLine1, sizeof(tempMessageLine1), line1 ? line1 : "");
-  copyBounded(tempMessageLine2, sizeof(tempMessageLine2), line2 ? line2 : "");
-  tempMessageEndTime = now + 2000;
+  char bootDetail[DISPLAY_LINE_BUFFER_SIZE];
+  buildBootDetail(bootDetail, sizeof(bootDetail));
+  renderLines("eWater boot", bootDetail, "Tizim ishga tushdi",
+              "WiFi tekshirilmoqda");
+}
+
+void setDisplayNetworkStatus(const char *message) {
+  const char *safeMessage = (message && message[0]) ? message : "";
+  copyBounded(wifiStatusMessage, sizeof(wifiStatusMessage), safeMessage);
+}
+
+void scheduleDisplayReinit(unsigned long quietMs) {
+  displayReinitAtMs =
+      millis() + ((quietMs > 0) ? quietMs : LCD_REINIT_SETTLE_MS);
+}
+
+void showTemporaryMessage(const char *line1, const char *line2) {
+  const unsigned long now = millis();
+  const char *safeLine1 = line1 ? line1 : "";
+  const char *safeLine2 = line2 ? line2 : "";
+  const bool sameMessage =
+      strcmp(tempMessageLine1, safeLine1) == 0 &&
+      strcmp(tempMessageLine2, safeLine2) == 0;
+
+  if (!sameMessage && (now - lastTempMessageSetMs) < TEMP_MESSAGE_MIN_GAP_MS) {
+    return;
+  }
+
+  copyBounded(tempMessageLine1, sizeof(tempMessageLine1), safeLine1);
+  copyBounded(tempMessageLine2, sizeof(tempMessageLine2), safeLine2);
+  tempMessageEndTime = now + TEMP_MESSAGE_DURATION_MS;
   lastTempMessageSetMs = now;
 }
 
-// ============================================
-// DISPLAY UPDATE
-// ============================================
 void updateDisplay() {
   const unsigned long now = millis();
+
+  if ((now - lastDisplayUpdateMs) < DISPLAY_UPDATE_MIN_GAP_MS) {
+    return;
+  }
+  lastDisplayUpdateMs = now;
 
   if (displayReinitAtMs != 0 &&
       static_cast<long>(now - displayReinitAtMs) >= 0) {
     displayReinitAtMs = 0;
-    if (initTftDriver()) {
-      hasRenderedState = false;
-      lastRenderedState = currentState;
-      renderMainScreen("Display tiklandi", "Noise'dan keyin qayta init");
-    } else {
-      displayReady = false;
-    }
+    initLcdDriver();
   }
 
   if (!displayReady) {
-    if (now - lastDisplayRecoverAttemptMs >= DISPLAY_RECOVER_RETRY_MS) {
+    if ((now - lastDisplayRecoverAttemptMs) >= DISPLAY_RECOVER_RETRY_MS) {
       lastDisplayRecoverAttemptMs = now;
-      if (initTftDriver()) {
-        hasRenderedState = false;
-        lastRenderedState = currentState;
-        renderMainScreen("Display tiklandi", "Onlayn: tekshirilmoqda");
-      }
+      initLcdDriver();
     }
     return;
   }
 
-  static unsigned long lastUpdateMs = 0;
-  if (now - lastUpdateMs < DISPLAY_UPDATE_MIN_GAP_MS) {
+  if (!probeActiveLcdHealth(now)) {
     return;
-  }
-  lastUpdateMs = now;
-
-  const bool stateChanged =
-      (!hasRenderedState) || (currentState != lastRenderedState);
-  const bool periodicRefreshDue =
-      (now - lastFullRefreshMs) >= DISPLAY_PERIODIC_FULL_REFRESH_MS;
-
-  if (stateChanged) {
-    if ((now - lastFullRefreshMs) >= DISPLAY_STATE_REFRESH_MIN_GAP_MS) {
-      forceFullDisplayRefresh("state change");
-    } else {
-      clearRenderCache();
-    }
-  } else if (periodicRefreshDue) {
-    forceFullDisplayRefresh("periodic scrub");
   }
 
   if (now < tempMessageEndTime && tempMessageLine1[0] != '\0') {
-    renderMainScreen(tempMessageLine1,
-                     tempMessageLine2[0] ? tempMessageLine2 : nullptr);
+    renderTempScreen();
     return;
   }
 
@@ -545,23 +561,17 @@ void updateDisplay() {
     displayPaused();
     break;
   default:
-    renderMainScreen("Holat xatosi", "Qayta yoqing");
+    renderLines("Holat xatosi", "Qayta yoqing", "", "");
     break;
   }
-
-  lastRenderedState = currentState;
-  hasRenderedState = true;
 }
 
-// ============================================
-// STATE DISPLAYS
-// ============================================
-void displayIdle() { renderMainScreen(nullptr, nullptr); }
+void displayIdle() { renderStateScreen(); }
 
-void displayActive() { renderMainScreen(nullptr, nullptr); }
+void displayActive() { renderStateScreen(); }
 
-void displayDispensing() { renderMainScreen(nullptr, nullptr); }
+void displayDispensing() { renderStateScreen(); }
 
-void displayPaused() { renderMainScreen(nullptr, nullptr); }
+void displayPaused() { renderStateScreen(); }
 
 bool isDisplayReady() { return displayReady; }

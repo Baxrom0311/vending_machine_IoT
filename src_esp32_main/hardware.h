@@ -11,57 +11,37 @@
 //
 
 // ============================================
-// SPI TFT DISPLAY (2.0" 7-pin, ST7789-compatible)
+// I2C LCD DISPLAY (20x4 with PCF8574 backpack)
 // User wiring:
-//   SDA(MOSI)=GPIO23, SCL(SCLK)=GPIO18, RST=GPIO33, DC=GPIO27, CS=GPIO5
-//   Relay=GPIO19, TDS=GPIO34, Flow=GPIO32, Start=GPIO25, Pause=GPIO26
+//   SDA=GPIO21, SCL=GPIO22, Relay=GPIO19, TDS=GPIO34, Flow=GPIO32
+//   Start=GPIO25, Pause=GPIO26
 // ============================================
-#ifndef TFT_MOSI_PIN
-#define TFT_MOSI_PIN 23
+#ifndef I2C_SDA_PIN
+#define I2C_SDA_PIN 21
 #endif
 
-#ifndef TFT_SCLK_PIN
-#define TFT_SCLK_PIN 18
+#ifndef I2C_SCL_PIN
+#define I2C_SCL_PIN 22
 #endif
 
-#ifndef TFT_CS_PIN
-#define TFT_CS_PIN 5
+#ifndef LCD_I2C_ADDR
+#define LCD_I2C_ADDR 0x27
 #endif
 
-#ifndef TFT_DC_PIN
-#define TFT_DC_PIN 27
+#ifndef LCD_I2C_ADDR_FALLBACK
+#define LCD_I2C_ADDR_FALLBACK 0x3F
 #endif
 
-#ifndef TFT_RST_PIN
-#define TFT_RST_PIN 33
+#ifndef LCD_I2C_CLOCK_HZ
+#define LCD_I2C_CLOCK_HZ 100000UL
 #endif
 
-#ifndef TFT_MISO_PIN
-#define TFT_MISO_PIN -1
+#ifndef LCD_COLS
+#define LCD_COLS 20
 #endif
 
-#ifndef TFT_WIDTH
-#define TFT_WIDTH 240
-#endif
-
-#ifndef TFT_HEIGHT
-#define TFT_HEIGHT 320
-#endif
-
-#ifndef TFT_ROTATION
-#define TFT_ROTATION 1 // 1 = landscape
-#endif
-
-#ifndef TFT_TEXT_SIZE
-#define TFT_TEXT_SIZE 3
-#endif
-
-#ifndef TFT_TOP_MARGIN_PX
-#define TFT_TOP_MARGIN_PX 12
-#endif
-
-#ifndef TFT_LINE_SPACING_PX
-#define TFT_LINE_SPACING_PX 6
+#ifndef LCD_ROWS
+#define LCD_ROWS 4
 #endif
 
 // ============================================
@@ -80,7 +60,7 @@
 // CONTROLS
 // ============================================
 #ifndef RELAY_PIN
-#define RELAY_PIN 19 // Solenoid valve relay (ACTIVE_HIGH in firmware)
+#define RELAY_PIN 19 // Solenoid valve relay
 #endif
 
 #ifndef START_BUTTON_PIN
@@ -91,12 +71,12 @@
 #define PAUSE_BUTTON_PIN 26 // Pause button (INPUT_PULLUP)
 #endif
 
-#if TFT_SCLK_PIN == RELAY_PIN
-#warning "TFT_SCLK_PIN conflicts with RELAY_PIN. Rewire one of them."
+#if I2C_SDA_PIN == RELAY_PIN || I2C_SCL_PIN == RELAY_PIN
+#warning "I2C pins conflict with RELAY_PIN. Rewire one of them."
 #endif
 
-#if TFT_RST_PIN == TDS_PIN
-#warning "TFT_RST_PIN conflicts with TDS_PIN. Rewire one of them."
+#if I2C_SDA_PIN == FLOW_SENSOR_PIN || I2C_SCL_PIN == FLOW_SENSOR_PIN
+#warning "I2C pins conflict with FLOW_SENSOR_PIN. Rewire one of them."
 #endif
 
 // ============================================
