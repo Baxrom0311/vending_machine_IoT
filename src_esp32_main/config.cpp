@@ -117,9 +117,7 @@ void applyRuntimeConfig() {
   config.tdsThreshold = deviceConfig.tdsThreshold;
   config.tdsTemperatureC = deviceConfig.tdsTemperatureC;
   config.tdsCalibrationFactor = deviceConfig.tdsCalibrationFactor;
-  // Hardware policy: relay is fixed Active-HIGH.
-  deviceConfig.relayActiveHigh = true;
-  config.relayActiveHigh = true;
+  config.relayActiveHigh = deviceConfig.relayActiveHigh;
   config.cashPulseValue = deviceConfig.cashPulseValue;
   config.cashPulseGapMs = deviceConfig.cashPulseGapMs;
   config.paymentCheckInterval = deviceConfig.paymentCheckInterval;

@@ -13,7 +13,7 @@ struct Config {
   int tdsThreshold = 100;                // ppm - warning only
   float tdsTemperatureC = 25.0;          // TDS compensation temp
   float tdsCalibrationFactor = 0.5;      // TDS calibration multiplier
-  bool relayActiveHigh = false;        // Relay polarity (forced Active HIGH)
+  bool relayActiveHigh = true;         // Relay polarity (default Active HIGH)
   int cashPulseValue = 500;           // so'm per pulse
   unsigned long cashPulseGapMs = 600; // gap to close pulse burst
   unsigned long paymentCheckInterval = 2000; // 2s

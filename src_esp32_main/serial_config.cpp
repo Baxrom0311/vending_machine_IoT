@@ -242,12 +242,19 @@ void processCommand(String cmd) {
 
   // SET_RELAY_ACTIVE:1|0
   else if (cmdUpper.startsWith("SET_RELAY_ACTIVE:")) {
-    // Hardware policy: project relay is fixed Active-HIGH.
-    deviceConfig.relayActiveHigh = true;
-    config.relayActiveHigh = true;
-    // Keep valve safely closed.
-    setRelay(false);
-    Serial.println("OK: Relay mode fixed to ACTIVE_HIGH");
+    String raw = cmd.substring(17);
+    raw.trim();
+    if (raw == "1" || raw == "0") {
+      deviceConfig.relayActiveHigh = (raw == "1");
+      config.relayActiveHigh = deviceConfig.relayActiveHigh;
+      // Apply polarity immediately while keeping valve safely closed.
+      setRelay(false);
+      Serial.print("OK: Relay mode set to ");
+      Serial.println(deviceConfig.relayActiveHigh ? "ACTIVE_HIGH"
+                                                  : "ACTIVE_LOW");
+    } else {
+      Serial.println("ERROR: Use SET_RELAY_ACTIVE:1 or SET_RELAY_ACTIVE:0");
+    }
   }
 
   // SET_PULSES_PER_LITER:value
@@ -513,7 +520,7 @@ void showHelp() {
       "  SET_PRICE:amount                 - Set price per liter (so'm)");
   Serial.println("  SET_TIMEOUT:seconds              - Set session timeout");
   Serial.println(
-      "  SET_RELAY_ACTIVE:1|0             - Relay mode (forced ACTIVE_HIGH)");
+      "  SET_RELAY_ACTIVE:1|0             - Relay mode (1=ACTIVE_HIGH, 0=ACTIVE_LOW)");
   Serial.println("  SET_API_SECRET:value             - Set API signing secret");
   Serial.println(
       "  SET_REQUIRE_SIGNED:1|0           - Require signed MQTT messages");
@@ -594,9 +601,12 @@ void showStatus() {
   Serial.print(balance);
   Serial.println(" so'm");
 
-  Serial.println("Relay Mode: ACTIVE_HIGH (forced)");
+  Serial.print("Relay Mode: ");
+  Serial.println(config.relayActiveHigh ? "ACTIVE_HIGH" : "ACTIVE_LOW");
   Serial.print("Relay Pin Level: ");
-  Serial.println(digitalRead(RELAY_PIN) == HIGH ? "HIGH (ON)" : "LOW (OFF)");
+  Serial.println(digitalRead(RELAY_PIN) == HIGH ? "HIGH" : "LOW");
+  Serial.print("Relay Logical State: ");
+  Serial.println(isRelayOn() ? "ON" : "OFF");
 
   Serial.print("Dispensed: ");
   Serial.print(totalDispensedLiters, 2);

@@ -143,13 +143,13 @@ void setup() {
   pinMode(START_BUTTON_PIN, INPUT_PULLUP);
   pinMode(PAUSE_BUTTON_PIN, INPUT_PULLUP);
 
+  // Load config from EEPROM FIRST
+  initConfigStorage();
+  initConfig();
   setRelay(false);
 
   // Initialize modules
   initDisplay();
-
-  // Load config from EEPROM FIRST
-  initConfigStorage();
 
   // Initialize serial config interface
   initSerialConfig();
@@ -160,9 +160,6 @@ void setup() {
     DEBUG_PRINTLN("Offline mode will run (cash only).");
     DEBUG_PRINTLN("Configure via Serial interface (type HELP)\n");
   }
-
-  // Now initialize with loaded config
-  initConfig();
   // Ensure relay is OFF (ACTIVE_HIGH hardware policy)
   setRelay(false);
   DEBUG_PRINT("Relay boot check (OFF) pin level: ");

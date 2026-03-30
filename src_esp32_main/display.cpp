@@ -33,6 +33,7 @@ static uint16_t lastLineColors[DISPLAY_LINE_COUNT] = {0};
 
 static unsigned long lastDisplayRecoverAttemptMs = 0;
 static unsigned long lastFullRefreshMs = 0;
+static unsigned long displayReinitAtMs = 0;
 static SystemState lastRenderedState = IDLE;
 static bool hasRenderedState = false;
 
@@ -431,6 +432,7 @@ void initDisplay() {
   tempMessageLine2[0] = '\0';
   tempMessageEndTime = 0;
   lastTempMessageSetMs = 0;
+  displayReinitAtMs = 0;
   lastDisplayRecoverAttemptMs = millis();
   lastFullRefreshMs = millis();
   hasRenderedState = false;
@@ -445,6 +447,11 @@ void initDisplay() {
 void setDisplayNetworkStatus(const char *message) {
   const char *safeMessage = (message && message[0]) ? message : "N/A";
   snprintf(wifiStatusMessage, sizeof(wifiStatusMessage), "%s", safeMessage);
+}
+
+void scheduleDisplayReinit(unsigned long quietMs) {
+  unsigned long now = millis();
+  displayReinitAtMs = now + quietMs;
 }
 
 // ============================================
@@ -467,6 +474,18 @@ void showTemporaryMessage(const char *line1, const char *line2) {
 // ============================================
 void updateDisplay() {
   const unsigned long now = millis();
+
+  if (displayReinitAtMs != 0 &&
+      static_cast<long>(now - displayReinitAtMs) >= 0) {
+    displayReinitAtMs = 0;
+    if (initTftDriver()) {
+      hasRenderedState = false;
+      lastRenderedState = currentState;
+      renderMainScreen("Display tiklandi", "Noise'dan keyin qayta init");
+    } else {
+      displayReady = false;
+    }
+  }
 
   if (!displayReady) {
     if (now - lastDisplayRecoverAttemptMs >= DISPLAY_RECOVER_RETRY_MS) {

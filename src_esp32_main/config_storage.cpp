@@ -217,8 +217,8 @@ void loadConfigFromStorage() {
   deviceConfig.tdsThreshold = preferences.getInt("tds_thresh", 100);
   deviceConfig.tdsTemperatureC = preferences.getFloat("tds_temp", 25.0);
   deviceConfig.tdsCalibrationFactor = preferences.getFloat("tds_calib", 0.5);
-  // Hardware policy: relay is fixed Active-HIGH.
-  deviceConfig.relayActiveHigh = true;
+  deviceConfig.relayActiveHigh =
+      preferences.getBool("relay_active_high", true);
   deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 500);
   deviceConfig.cashPulseGapMs = preferences.getULong("cash_gap", 600);
 

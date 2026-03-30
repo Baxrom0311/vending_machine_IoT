@@ -75,11 +75,6 @@ void validateConfig() {
     deviceConfig.heartbeatInterval = 30000;
     changed = true;
   }
-  if (!deviceConfig.relayActiveHigh) {
-    deviceConfig.relayActiveHigh = true;
-    changed = true;
-  }
-
   if (changed) {
     DEBUG_PRINTLN("Config validation corrected invalid values.");
     saveConfigToStorage();
