@@ -187,13 +187,10 @@ function buildCanonicalPayload(type, payload, deviceId) {
         add('mqttPassword');
         add('pricePerLiter');
         add('sessionTimeout');
-        add('freeWaterCooldown');
-        add('freeWaterAmount');
         add('pulsesPerLiter');
         add('tdsThreshold');
         add('tdsTemperatureC');
         add('tdsCalibrationFactor');
-        add('enableFreeWater');
         add('relayActiveHigh');
         add('relay_active_high');
         add('cashPulseValue');

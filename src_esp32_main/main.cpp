@@ -336,14 +336,15 @@ void loop() {
 
   // Task 7: Button Handling (edge-based debounce)
   const unsigned long DEBOUNCE_MS = 100;
-  const unsigned long BUTTON_ACTION_GAP_MS = 650;
+  const unsigned long BUTTON_REPEAT_GAP_MS = 250;
   static int startLastRaw = HIGH;
   static int startStable = HIGH;
   static unsigned long startLastChangeMs = 0;
   static int pauseLastRaw = HIGH;
   static int pauseStable = HIGH;
   static unsigned long pauseLastChangeMs = 0;
-  static unsigned long lastButtonActionMs = 0;
+  static unsigned long lastStartActionMs = 0;
+  static unsigned long lastPauseActionMs = 0;
   const unsigned long buttonNow = millis();
 
   const int startRaw = digitalRead(START_BUTTON_PIN);
@@ -355,10 +356,10 @@ void loop() {
       startStable != startLastRaw) {
     startStable = startLastRaw;
     if (startStable == LOW &&
-        (buttonNow - lastButtonActionMs) >= BUTTON_ACTION_GAP_MS) {
+        (buttonNow - lastStartActionMs) >= BUTTON_REPEAT_GAP_MS) {
       DEBUG_PRINT("▶️ START pressed! State=");
       DEBUG_PRINTLN(currentState);
-      lastButtonActionMs = buttonNow;
+      lastStartActionMs = buttonNow;
       handleStartButton();
     }
   }
@@ -372,16 +373,16 @@ void loop() {
       pauseStable != pauseLastRaw) {
     pauseStable = pauseLastRaw;
     if (pauseStable == LOW &&
-        (buttonNow - lastButtonActionMs) >= BUTTON_ACTION_GAP_MS) {
+        (buttonNow - lastPauseActionMs) >= BUTTON_REPEAT_GAP_MS) {
       DEBUG_PRINT("⏸️ PAUSE pressed! State=");
       DEBUG_PRINTLN(currentState);
-      lastButtonActionMs = buttonNow;
+      lastPauseActionMs = buttonNow;
       handlePauseButton();
     }
   }
 
   // Task 7: Flow Sensor Processing
-  if (currentState == DISPENSING) {
+  if (currentState == DISPENSING || currentState == PAUSED) {
     processFlowSensor();
     // HIGH FIX: lastSessionActivity is now updated ONLY when actual flow
     // detected (inside processFlowSensor when litersDiff >= 0.01) This ensures

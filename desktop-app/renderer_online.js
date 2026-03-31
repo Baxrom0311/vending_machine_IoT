@@ -43,15 +43,18 @@ export function setupOnline(prefix) {
     });
 
     // Online mode: some config fields are serial-only on current firmware.
-    const disableSerialOnlyField = (id, reason) => {
+    const disableConfigField = (id, reason) => {
         const el = document.getElementById(p + id);
         if (!el) return;
         el.disabled = true;
-        el.title = reason || 'This setting can be changed only via Serial mode';
+        el.title = reason || 'This setting is not supported by the current firmware';
     };
-    disableSerialOnlyField('requireSigned', 'RequireSigned is set via Serial config');
-    disableSerialOnlyField('allowRemoteNetworkConfig', 'AllowRemoteNetworkConfig is set via Serial config');
-    disableSerialOnlyField('groupId', 'GroupId is set via Serial config');
+    disableConfigField('requireSigned', 'RequireSigned is set via Serial config');
+    disableConfigField('allowRemoteNetworkConfig', 'AllowRemoteNetworkConfig is set via Serial config');
+    disableConfigField('groupId', 'GroupId is set via Serial config');
+    disableConfigField('enableFreeWater', 'Free-water settings are not supported by the current firmware');
+    disableConfigField('freeWaterCooldown', 'Free-water settings are not supported by the current firmware');
+    disableConfigField('freeWaterAmount', 'Free-water settings are not supported by the current firmware');
 
     const apiSecretEl = document.getElementById(p + 'apiSecret');
     if (apiSecretEl) {
@@ -62,13 +65,6 @@ export function setupOnline(prefix) {
 
     function makeNonce(prefix) {
         return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
-    }
-
-    function normalizeFreeWaterToLiters(raw) {
-        // UI is in ml, but firmware expects liters for MQTT config updates.
-        // Accept liters (<= 5.0) or ml (> 5.0), same as serial normalization.
-        if (!Number.isFinite(raw) || raw <= 0) return raw;
-        return raw > 5 ? raw / 1000.0 : raw;
     }
 
     async function toggleConnection() {
@@ -291,13 +287,9 @@ export function setupOnline(prefix) {
                 logToElement(monitorOutput, 'MQTT Username is filled but password is empty — skipping MQTT auth update.', 'error');
             }
         } else {
-            const freeWaterLiters = normalizeFreeWaterToLiters(getNum('freeWaterAmount'));
             Object.assign(config, {
                 pricePerLiter: getNum('pricePerLiter'),
                 sessionTimeout: getNum('sessionTimeout'),
-                enableFreeWater: getChk('enableFreeWater'),
-                freeWaterCooldown: getNum('freeWaterCooldown'),
-                freeWaterAmount: freeWaterLiters,
                 pulsesPerLiter: getNum('pulsesPerLiter'),
                 tdsThreshold: getNum('tdsThreshold'),
                 tdsTemperatureC: getNum('tdsTemperatureC'),

@@ -589,6 +589,29 @@ static bool checkAndStoreSignedTimestamp(const char *tsKey, uint64_t ts) {
   return true;
 }
 
+static bool persistReplayProtectionNow(const char *idxKey, const char *bufKey,
+                                       const char *tsKey) {
+  ReplayNonceCache *nonceCache = resolveNonceCache(idxKey, bufKey);
+  if (!nonceCache) {
+    publishLog("ERROR", "Replay nonce cache mapping missing");
+    return false;
+  }
+  if (!flushNonceCache(idxKey, bufKey, *nonceCache, true)) {
+    return false;
+  }
+
+  if (!tsKey || tsKey[0] == '\0') {
+    return true;
+  }
+
+  ReplayTsCache *tsCache = resolveTsCache(tsKey);
+  if (!tsCache) {
+    publishLog("ERROR", "Replay ts cache mapping missing");
+    return false;
+  }
+  return flushTsCache(tsKey, *tsCache, true);
+}
+
 static bool enforceSignedReplayProtection(const JsonDocument &doc,
                                           const char *context,
                                           const char *idxKey,
@@ -618,6 +641,12 @@ static bool enforceSignedReplayProtection(const JsonDocument &doc,
   uint64_t nonceHash = hashNonceTs(nonce, ts);
   if (!checkAndStorePersistentNonce(idxKey, bufKey, nonceHash)) {
     publishLog("ERROR", (String(context) + " replay detected").c_str());
+    return false;
+  }
+
+  if (!persistReplayProtectionNow(idxKey, bufKey, tsKey)) {
+    publishLog("ERROR",
+               (String(context) + " replay persistence failed").c_str());
     return false;
   }
 

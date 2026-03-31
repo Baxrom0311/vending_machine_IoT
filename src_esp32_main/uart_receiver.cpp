@@ -74,10 +74,10 @@ static void loadRecentPaymentSeqCache() {
   preferences.end();
 }
 
-static void persistRecentPaymentSeqCache() {
+static bool persistRecentPaymentSeqCache() {
   if (!preferences.begin("ewater", false)) {
     DEBUG_PRINTLN("⚠️ UART seq cache save failed (NVS open)");
-    return;
+    return false;
   }
 
   const size_t saved = preferences.putBytes("uart_seq_buf", recentPaymentSeq,
@@ -89,24 +89,26 @@ static void persistRecentPaymentSeqCache() {
 
   if (saved != sizeof(recentPaymentSeq) || idxSaved != sizeof(uint8_t)) {
     DEBUG_PRINTLN("⚠️ UART seq cache save incomplete");
+    return false;
   }
 
   seqCacheDirty = false;
   seqCacheDirtySinceMs = 0;
   seqCacheMutations = 0;
+  return true;
 }
 
-static void flushRecentPaymentSeqCacheIfNeeded(bool forceFlush) {
+static bool flushRecentPaymentSeqCacheIfNeeded(bool forceFlush) {
   if (!seqCacheDirty) {
-    return;
+    return true;
   }
 
   const unsigned long now = millis();
   if (!forceFlush && seqCacheMutations < PAYMENT_SEQ_MUTATION_LIMIT &&
       (now - seqCacheDirtySinceMs) < PAYMENT_SEQ_FLUSH_MS) {
-    return;
+    return true;
   }
-  persistRecentPaymentSeqCache();
+  return persistRecentPaymentSeqCache();
 }
 
 static bool isDuplicatePaymentSeq(uint32_t seq) {
@@ -120,7 +122,6 @@ static bool isDuplicatePaymentSeq(uint32_t seq) {
   }
   recentPaymentSeq[recentPaymentSeqIdx++ % PAYMENT_SEQ_CACHE_SIZE] = seq;
   markSeqCacheDirty();
-  flushRecentPaymentSeqCacheIfNeeded(false);
   return false;
 }
 
@@ -337,6 +338,9 @@ void processUartReceiver() {
         DEBUG_PRINTLN("✅ Processing payment...");
         processPayment(amount, "cash_uart", nullptr, nullptr);
         sendAck(seq); // ACK only after payment is committed on Main ESP
+        if (!flushRecentPaymentSeqCacheIfNeeded(true)) {
+          DEBUG_PRINTLN("⚠️ UART seq cache flush after ACK failed");
+        }
 
         DEBUG_PRINT("   Balance AFTER: ");
         DEBUG_PRINTLN(balance);

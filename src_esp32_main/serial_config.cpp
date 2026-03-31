@@ -249,6 +249,12 @@ void processCommand(String cmd) {
       config.relayActiveHigh = deviceConfig.relayActiveHigh;
       // Apply polarity immediately while keeping valve safely closed.
       setRelay(false);
+      if (currentState == DISPENSING) {
+        currentState = (balance > 0) ? PAUSED : IDLE;
+        resetSessionTimer();
+        publishLog("CONFIG", "Relay polarity changed; session paused");
+        publishStatus();
+      }
       Serial.print("OK: Relay mode set to ");
       Serial.println(deviceConfig.relayActiveHigh ? "ACTIVE_HIGH"
                                                   : "ACTIVE_LOW");
@@ -437,7 +443,16 @@ void processCommand(String cmd) {
   // LOAD_CONFIG
   else if (cmdUpper == "LOAD_CONFIG") {
     loadConfigFromStorage();
-    Serial.println("OK: Configuration reloaded from EEPROM");
+    applyRuntimeConfig();
+    applyConfigStateEffects();
+    if (isPaymentEspConnected()) {
+      sendCashConfigToPaymentEsp(config.cashPulseValue, config.cashPulseGapMs);
+    }
+    setupWiFi();
+    mqttClient.disconnect();
+    mqttClient.setServer(deviceConfig.mqtt_broker, deviceConfig.mqtt_port);
+    reconnectMQTT();
+    Serial.println("OK: Configuration reloaded from EEPROM and applied");
     printCurrentConfig();
   }
 

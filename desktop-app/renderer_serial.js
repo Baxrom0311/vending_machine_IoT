@@ -25,6 +25,13 @@ export function setupSerial(prefix) {
     const loadExtraBtn = document.getElementById(p + 'loadExtraConfigBtn');
     const saveExtraBtn = document.getElementById(p + 'saveExtraConfigBtn');
 
+    const disableUnsupportedField = (id, reason) => {
+        const el = document.getElementById(p + id);
+        if (!el) return;
+        el.disabled = true;
+        el.title = reason || 'This setting is not supported by the current firmware';
+    };
+
     // Firmware elements
     const firmwareContainer = document.getElementById('serialFirmwareContainer');
 
@@ -81,6 +88,10 @@ export function setupSerial(prefix) {
 
     document.getElementById('serialBrowseBtn').addEventListener('click', browseFirmware);
     document.getElementById('serialFlashBtn').addEventListener('click', flashFirmware);
+
+    disableUnsupportedField('enableFreeWater', 'Free-water settings are not supported by the current firmware');
+    disableUnsupportedField('freeWaterCooldown', 'Free-water settings are not supported by the current firmware');
+    disableUnsupportedField('freeWaterAmount', 'Free-water settings are not supported by the current firmware');
 
     // Initial Scan
     scanPorts();
@@ -284,7 +295,7 @@ export function setupSerial(prefix) {
 }
 
 // Helper to build commands from form - FIXED: Use firmware-compatible command names
-function buildBasicConfigCommands(p) {
+function buildBasicConfigCommands(p, loadedState) {
     const getVal = (id) => document.getElementById(p + id).value;
 
     const ssid = getVal('wifiSsid').trim();
@@ -345,9 +356,6 @@ function buildExtraConfigCommands(p) {
     cmds.push(`SET_PRICE:${getVal('pricePerLiter')}`);
     cmds.push(`SET_TIMEOUT:${getVal('sessionTimeout')}`);
     cmds.push(`SET_RELAY_ACTIVE:${getChk('relayActiveHigh') ? 1 : 0}`);
-    cmds.push(`SET_FREE_WATER:${getChk('enableFreeWater') ? 1 : 0}`);
-    cmds.push(`SET_FREE_WATER_COOLDOWN:${getVal('freeWaterCooldown')}`);
-    cmds.push(`SET_FREE_WATER_AMOUNT:${getVal('freeWaterAmount')}`);
 
     // Sensors
     cmds.push(`SET_PULSES_PER_LITER:${getVal('pulsesPerLiter')}`);

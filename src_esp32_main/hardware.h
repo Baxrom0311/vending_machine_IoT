@@ -52,7 +52,7 @@
 #endif
 
 #ifndef FLOW_SENSOR_PIN
-#define FLOW_SENSOR_PIN 32 // Flow sensor pulse (ADC1_CH4, interrupt capable)
+#define FLOW_SENSOR_PIN 23 // Flow sensor pulse (no ADC — analog cross-talk yo'q)
 #endif
 // 5V signal bo'lsa, 3.3V ga moslash shart!
 

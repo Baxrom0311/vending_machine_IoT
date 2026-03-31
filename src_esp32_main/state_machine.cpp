@@ -24,6 +24,38 @@ static SystemState pausedFromState = IDLE;
 static float pendingDispenseCost = 0.0f;
 static unsigned long lastBusyStartHintMs = 0;
 
+static bool isDispenseBillingState(SystemState state) {
+  return state == DISPENSING || state == PAUSED;
+}
+
+static void applyDispenseBilling(float litersDiff) {
+  if (litersDiff <= 0.0f) {
+    return;
+  }
+
+  // Keep billing late tail-flow pulses after PAUSE so residual water is not free.
+  pendingDispenseCost += litersDiff * static_cast<float>(config.pricePerLiter);
+  int cost = static_cast<int>(pendingDispenseCost);
+  pendingDispenseCost -= static_cast<float>(cost);
+
+  totalDispensedLiters += litersDiff;
+
+  if (cost >= balance) {
+    balance = 0;
+    currentState = IDLE;
+    pausedFromState = IDLE;
+    pendingDispenseCost = 0.0f;
+    setRelay(false);
+    resetSessionTimer();
+
+    publishLog("BALANCE", "Depleted");
+    publishStatus();
+    return;
+  }
+
+  balance -= cost;
+}
+
 // ============================================
 // INITIALIZATION
 // ============================================
@@ -55,7 +87,26 @@ void resetFlowCounters() {
 // ============================================
 // APPLY CONFIG EFFECTS (Runtime)
 // ============================================
-void applyConfigStateEffects() {}
+void applyConfigStateEffects() {
+  if (balance <= 0) {
+    currentState = IDLE;
+    pausedFromState = IDLE;
+    pendingDispenseCost = 0.0f;
+    setRelay(false);
+    return;
+  }
+
+  if (currentState == IDLE) {
+    currentState = ACTIVE;
+  }
+
+  if (currentState == DISPENSING) {
+    setRelay(true);
+    return;
+  }
+
+  setRelay(false);
+}
 
 // ============================================
 // SESSION TIMEOUT HANDLER
@@ -206,29 +257,8 @@ void processFlowSensor() {
     // stops
     lastSessionActivity = millis();
 
-    if (currentState == DISPENSING) {
-      // Fractional billing accumulator to avoid underbilling from int truncation.
-      pendingDispenseCost += litersDiff * static_cast<float>(config.pricePerLiter);
-      int cost = static_cast<int>(pendingDispenseCost);
-      pendingDispenseCost -= static_cast<float>(cost);
-
-      // FIX: Always update totalDispensedLiters first
-      totalDispensedLiters += litersDiff;
-
-      if (cost >= balance) {
-        // Balance depleted - FIX: Go to IDLE, not ACTIVE
-        balance = 0;
-        currentState = IDLE;
-        pendingDispenseCost = 0.0f;
-        setRelay(false);
-        resetSessionTimer(); // Prevent stale lastSessionActivity
-
-        publishLog("BALANCE", "Depleted");
-        publishStatus();
-      } else {
-        // Normal deduction
-        balance -= cost;
-      }
+    if (isDispenseBillingState(currentState)) {
+      applyDispenseBilling(litersDiff);
     }
   }
 }

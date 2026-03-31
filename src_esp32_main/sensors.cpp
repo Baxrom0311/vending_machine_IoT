@@ -14,10 +14,10 @@
 int tdsPPM = 0;
 static volatile unsigned long lastAcceptedFlowPulseUs = 0;
 
-// Reject implausibly fast pulses and relay switching noise.
-// For ~450 pulses/L sensors this still allows >20L/min flow safely.
-static constexpr unsigned long FLOW_MIN_PULSE_INTERVAL_US = 2500UL;
-static constexpr unsigned long FLOW_RELAY_NOISE_GUARD_US = 250000UL;
+// Reject implausibly fast pulses and short relay-edge EMI bursts.
+// Keep the relay-edge guard short so real flow is not lost at start/stop.
+static constexpr unsigned long FLOW_MIN_PULSE_INTERVAL_US = 5000UL;   // 5ms — EMI noise filter (max ~200 puls/s = 0.44 L/s)
+static constexpr unsigned long FLOW_RELAY_NOISE_GUARD_US = 200000UL;  // 200ms — relay EMI guard (suv ham birdaniga oqmaydi)
 
 // ============================================
 // INITIALIZATION
@@ -44,7 +44,7 @@ void initSensors() {
 void IRAM_ATTR flowSensorISR() {
   const unsigned long nowUs = micros();
 
-  // Ignore spikes shortly after relay transitions (AC valve EMI).
+  // Ignore only the short EMI burst around relay edges.
   if ((nowUs - getRelayLastChangeUs()) < FLOW_RELAY_NOISE_GUARD_US) {
     return;
   }

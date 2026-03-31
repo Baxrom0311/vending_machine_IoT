@@ -14,12 +14,10 @@ void setRelay(bool on) {
   int level = on ? relayOnLevel() : relayOffLevel();
   digitalWrite(RELAY_PIN, level);
   relayLastChangeUs = micros();
-  // Relay edges are the most likely EMI source for TFT corruption.
-  // Re-init the panel after a short quiet period so the UI recovers if the
-  // controller reset/desynced while ESP32 kept running.
-  if (isDisplayReady()) {
-    scheduleDisplayReinit(150UL);
-  }
+  // Relay edges are the most likely EMI source for LCD/I2C corruption.
+  // Always schedule a quiet-period recovery so the display can self-heal even
+  // if the backpack glitched while the ESP32 kept running.
+  scheduleDisplayReinit(150UL);
 
   DEBUG_PRINT("RELAY CMD: ");
   DEBUG_PRINT(on ? "ON" : "OFF");
