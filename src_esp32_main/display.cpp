@@ -3,10 +3,9 @@
 #include "config_storage.h"
 #include "debug.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
 #include "state_machine.h"
+#include "uart_receiver.h"
 #include <SPI.h>
-#include <WiFi.h>
 #include <cstdio>
 #include <cstring>
 
@@ -389,10 +388,9 @@ static void formatRemainingWaterLine(char *out, size_t outSize) {
   }
 }
 
-static void formatOnlinePaymentLine(char *out, size_t outSize) {
-  const bool clickOk =
-      isConfigured() && (WiFi.status() == WL_CONNECTED) && mqttClient.connected();
-  snprintf(out, outSize, clickOk ? "Click: ishladi" : "Click: ishlamadi");
+static void formatLocalPaymentLine(char *out, size_t outSize) {
+  snprintf(out, outSize, isPaymentEspConnected() ? "Naqd: ulangan"
+                                                 : "Naqd: kutilyapti");
 }
 
 static void renderMainScreen(const char *line2Override,
@@ -414,7 +412,7 @@ static void renderMainScreen(const char *line2Override,
   if (line3Override && line3Override[0]) {
     copyBounded(line3, sizeof(line3), line3Override);
   } else {
-    formatOnlinePaymentLine(line3, sizeof(line3));
+    formatLocalPaymentLine(line3, sizeof(line3));
   }
 
   renderScreen(line0, line1, line2, line3);
@@ -438,7 +436,7 @@ void initDisplay() {
   hasRenderedState = false;
   lastRenderedState = currentState;
 
-  renderMainScreen("Iltimos kuting...", "Onlayn: tekshirilmoqda");
+  renderMainScreen("Iltimos kuting...", "Local: tayyorlanmoqda");
 }
 
 // ============================================
@@ -493,7 +491,7 @@ void updateDisplay() {
       if (initTftDriver()) {
         hasRenderedState = false;
         lastRenderedState = currentState;
-        renderMainScreen("Display tiklandi", "Onlayn: tekshirilmoqda");
+        renderMainScreen("Display tiklandi", "Local: tekshirilmoqda");
       }
     }
     return;

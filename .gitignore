@@ -32,6 +32,9 @@ desktop-app/node_modules/
 **/*.elf
 **/*.map
 
+# Runtime logs
+logs/
+
 # Secrets (just in case future files are added)
 secrets.h
 private_config.h

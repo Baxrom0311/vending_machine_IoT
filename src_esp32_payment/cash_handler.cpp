@@ -28,7 +28,29 @@ static unsigned long cashPulseGapMs = CASH_PULSE_GAP_MS;
 static int pendingPayment = 0;
 static int activePulseLevel = LOW;
 static constexpr uint32_t CASH_MIN_EDGE_GAP_US = 2000UL;
-static constexpr uint32_t CASH_MIN_PULSE_INTERVAL_US = 25000UL;
+static constexpr uint32_t CASH_MIN_PULSE_INTERVAL_US = 5000UL; // 5ms; 25ms was too aggressive
+static constexpr int VALID_BILL_DENOMS[] = {1000, 2000, 5000, 10000, 20000,
+                                            50000, 100000};
+
+static int normalizeBillAmount(int rawAmount) {
+  if (rawAmount <= 0) {
+    return rawAmount;
+  }
+
+  for (int denom : VALID_BILL_DENOMS) {
+    if (rawAmount == denom) {
+      return rawAmount;
+    }
+
+    // If the validator misses exactly one pulse, the raw amount lands just
+    // below a real bill denomination. Round only that narrow case.
+    if (rawAmount < denom && (denom - rawAmount) <= cashPulseValue) {
+      return denom;
+    }
+  }
+
+  return rawAmount;
+}
 
 // ============================================
 // ISR - Interrupt Service Routine
@@ -130,7 +152,8 @@ void processCashPulses() {
   pulseCount = 0;
   interrupts();
 
-  int amount = (int)pulses * cashPulseValue;
+  const int rawAmount = (int)pulses * cashPulseValue;
+  const int amount = normalizeBillAmount(rawAmount);
   if (amount > 0 && pendingPayment > INT_MAX - amount) {
     pendingPayment = INT_MAX;
     PAY_CASH_LOG_PRINTLN("⚠️ pendingPayment saturated at INT_MAX");
@@ -141,6 +164,12 @@ void processCashPulses() {
   PAY_CASH_LOG_PRINTLN("========================");
   PAY_CASH_LOG_PRINT("BILL_DONE pulses=");
   PAY_CASH_LOG_PRINTLN(pulses);
+  if (amount != rawAmount) {
+    PAY_CASH_LOG_PRINT("RAW_AMOUNT=");
+    PAY_CASH_LOG_PRINTLN(rawAmount);
+    PAY_CASH_LOG_PRINT("NORMALIZED_AMOUNT=");
+    PAY_CASH_LOG_PRINTLN(amount);
+  }
   PAY_CASH_LOG_PRINT("QABUL_QILINGAN_PUL=");
   PAY_CASH_LOG_PRINTLN(amount);
   PAY_CASH_LOG_PRINT("PENDING_PUL=");

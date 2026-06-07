@@ -24,4 +24,10 @@ void processUartReceive();
 // Check if Main ESP32 is connected
 bool isMainEspConnected();
 
+// Clear queued offline payments from RAM and NVS
+void clearPaymentQueue();
+
+// Number of queued payments waiting for Main ESP ACK
+int getPaymentQueueCount();
+
 #endif

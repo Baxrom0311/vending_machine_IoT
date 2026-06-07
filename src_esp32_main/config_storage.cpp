@@ -34,21 +34,7 @@ static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
     return false;
   if (strncmp(a.wifi_password, b.wifi_password, sizeof(a.wifi_password)) != 0)
     return false;
-  if (strncmp(a.mqtt_broker, b.mqtt_broker, sizeof(a.mqtt_broker)) != 0)
-    return false;
-  if (a.mqtt_port != b.mqtt_port)
-    return false;
-  if (strncmp(a.mqtt_username, b.mqtt_username, sizeof(a.mqtt_username)) != 0)
-    return false;
-  if (strncmp(a.mqtt_password, b.mqtt_password, sizeof(a.mqtt_password)) != 0)
-    return false;
   if (strncmp(a.device_id, b.device_id, sizeof(a.device_id)) != 0)
-    return false;
-  if (strncmp(a.api_secret, b.api_secret, sizeof(a.api_secret)) != 0)
-    return false;
-  if (a.requireSignedMessages != b.requireSignedMessages)
-    return false;
-  if (a.allowRemoteNetworkConfig != b.allowRemoteNetworkConfig)
     return false;
   if (a.pricePerLiter != b.pricePerLiter)
     return false;
@@ -82,8 +68,6 @@ static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
     return false;
   if (a.deepSleepEndHour != b.deepSleepEndHour)
     return false;
-  if (strncmp(a.groupId, b.groupId, sizeof(a.groupId)) != 0)
-    return false;
   if (a.configVersion != b.configVersion)
     return false;
   if (a.configured != b.configured)
@@ -104,15 +88,7 @@ void loadDefaultConfig() {
   deviceConfig.wifi_ssid[0] = '\0';
   deviceConfig.wifi_password[0] = '\0';
 
-  // MQTT
-  deviceConfig.mqtt_broker[0] = '\0';
-  deviceConfig.mqtt_port = 1883;
-  strcpy(deviceConfig.mqtt_username, "");
-  strcpy(deviceConfig.mqtt_password, "");
   strcpy(deviceConfig.device_id, "VendingMachine_001");
-  strcpy(deviceConfig.api_secret, "");
-  deviceConfig.requireSignedMessages = false;
-  deviceConfig.allowRemoteNetworkConfig = true;
 
   // Vending Settings
   deviceConfig.pricePerLiter = 500;
@@ -122,7 +98,7 @@ void loadDefaultConfig() {
   deviceConfig.tdsTemperatureC = 25.0;
   deviceConfig.tdsCalibrationFactor = 0.5;
   deviceConfig.relayActiveHigh = true; // Relay polarity (Active HIGH for modules)
-  deviceConfig.cashPulseValue = 500;
+  deviceConfig.cashPulseValue = 1000;
   deviceConfig.cashPulseGapMs = 600;
 
   // Intervals
@@ -136,11 +112,8 @@ void loadDefaultConfig() {
   deviceConfig.deepSleepStartHour = 1; // 01:00
   deviceConfig.deepSleepEndHour = 6;   // 06:00
 
-  // Fleet Management
-  strcpy(deviceConfig.groupId, ""); // Empty by default (no group)
-
   // Flags
-  deviceConfig.configVersion = 3;
+  deviceConfig.configVersion = 5;
   deviceConfig.configured = false;
 }
 
@@ -189,26 +162,9 @@ void loadConfigFromStorage() {
   copyToBuffer(deviceConfig.wifi_password, sizeof(deviceConfig.wifi_password),
                pass);
 
-  // MQTT
-  String broker = preferences.getString("mqtt_broker", "");
-  String username = preferences.getString("mqtt_user", "");
-  String password = preferences.getString("mqtt_pass", "");
   String devId = preferences.getString("device_id", "VendingMachine_001");
 
-  copyToBuffer(deviceConfig.mqtt_broker, sizeof(deviceConfig.mqtt_broker),
-               broker);
-  deviceConfig.mqtt_port = preferences.getInt("mqtt_port", 1883);
-  copyToBuffer(deviceConfig.mqtt_username, sizeof(deviceConfig.mqtt_username),
-               username);
-  copyToBuffer(deviceConfig.mqtt_password, sizeof(deviceConfig.mqtt_password),
-               password);
   copyToBuffer(deviceConfig.device_id, sizeof(deviceConfig.device_id), devId);
-  String apiSecret = preferences.getString("api_secret", "");
-  copyToBuffer(deviceConfig.api_secret, sizeof(deviceConfig.api_secret),
-               apiSecret);
-  deviceConfig.requireSignedMessages = preferences.getBool("req_signed", false);
-  deviceConfig.allowRemoteNetworkConfig =
-      preferences.getBool("allow_netcfg", true);
 
   // Vending Settings
   deviceConfig.pricePerLiter = preferences.getInt("price", 500);
@@ -219,7 +175,7 @@ void loadConfigFromStorage() {
   deviceConfig.tdsCalibrationFactor = preferences.getFloat("tds_calib", 0.5);
   deviceConfig.relayActiveHigh =
       preferences.getBool("relay_active_high", true);
-  deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 500);
+  deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 1000);
   deviceConfig.cashPulseGapMs = preferences.getULong("cash_gap", 600);
 
   // Intervals
@@ -234,12 +190,6 @@ void loadConfigFromStorage() {
   deviceConfig.enablePowerSave = preferences.getBool("enable_ps", false);
   deviceConfig.deepSleepStartHour = preferences.getInt("sleep_start", 1);
   deviceConfig.deepSleepEndHour = preferences.getInt("sleep_end", 6);
-
-  // Fleet Management
-  String groupIdStr = preferences.getString("group_id", "");
-  strncpy(deviceConfig.groupId, groupIdStr.c_str(),
-          sizeof(deviceConfig.groupId) - 1);
-  deviceConfig.groupId[sizeof(deviceConfig.groupId) - 1] = '\0';
 
   // Meta
   deviceConfig.configVersion = preferences.getInt("cfg_version", 1);
@@ -284,20 +234,7 @@ void saveConfigToStorage() {
   putStrChecked("wifi_ssid", deviceConfig.wifi_ssid);
   putStrChecked("wifi_pass", deviceConfig.wifi_password);
 
-  // MQTT
-  putStrChecked("mqtt_broker", deviceConfig.mqtt_broker);
-  putFixedChecked(preferences.putInt("mqtt_port", deviceConfig.mqtt_port),
-                  sizeof(int32_t));
-  putStrChecked("mqtt_user", deviceConfig.mqtt_username);
-  putStrChecked("mqtt_pass", deviceConfig.mqtt_password);
   putStrChecked("device_id", deviceConfig.device_id);
-  putStrChecked("api_secret", deviceConfig.api_secret);
-  putFixedChecked(
-      preferences.putBool("req_signed", deviceConfig.requireSignedMessages),
-      sizeof(uint8_t));
-  putFixedChecked(
-      preferences.putBool("allow_netcfg", deviceConfig.allowRemoteNetworkConfig),
-      sizeof(uint8_t));
 
   // Vending Settings
   putFixedChecked(preferences.putInt("price", deviceConfig.pricePerLiter),
@@ -343,9 +280,6 @@ void saveConfigToStorage() {
                   sizeof(int32_t));
   putFixedChecked(preferences.putInt("sleep_end", deviceConfig.deepSleepEndHour),
                   sizeof(int32_t));
-
-  // Fleet Management
-  putStrChecked("group_id", deviceConfig.groupId);
 
   // Meta
   putFixedChecked(preferences.putInt("cfg_version", deviceConfig.configVersion),
@@ -393,25 +327,9 @@ void printCurrentConfig() {
   Serial.print("  Password: ");
   Serial.println(deviceConfig.wifi_password[0] ? "********" : "(not set)");
 
-  Serial.println("\n[MQTT]");
-  Serial.print("  Broker: ");
-  Serial.println(deviceConfig.mqtt_broker);
-  Serial.print("  Port: ");
-  Serial.println(deviceConfig.mqtt_port);
+  Serial.println("\n[Device]");
   Serial.print("  Device ID: ");
   Serial.println(deviceConfig.device_id);
-  Serial.print("  Username: ");
-  Serial.println(deviceConfig.mqtt_username[0] ? deviceConfig.mqtt_username
-                                               : "(not set)");
-  Serial.print("  API Secret: ");
-  Serial.println(deviceConfig.api_secret[0] ? "********" : "(not set)");
-  Serial.print("  Require Signed: ");
-  Serial.println(deviceConfig.requireSignedMessages ? "YES" : "NO");
-  Serial.print("  Remote Network Config: ");
-  Serial.println(deviceConfig.allowRemoteNetworkConfig ? "Allowed"
-                                                       : "Disabled");
-  Serial.print("  Group ID: ");
-  Serial.println(deviceConfig.groupId[0] ? deviceConfig.groupId : "(not set)");
 
   Serial.println("\n[Vending]");
   Serial.print("  Price per Liter: ");
@@ -473,6 +391,5 @@ void printCurrentConfig() {
 // CHECK IF CONFIGURED
 // ============================================
 bool isConfigured() {
-  return deviceConfig.configured && deviceConfig.wifi_ssid[0] != '\0' &&
-         deviceConfig.mqtt_broker[0] != '\0';
+  return deviceConfig.configured;
 }

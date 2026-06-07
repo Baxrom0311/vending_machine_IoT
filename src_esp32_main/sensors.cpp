@@ -3,10 +3,8 @@
 #include "config_storage.h"
 #include "debug.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
 #include "relay_control.h"
 #include "state_machine.h"
-#include <ArduinoJson.h>
 
 // ============================================
 // GLOBAL VARIABLES
@@ -100,18 +98,10 @@ int readTDS() {
 }
 
 // ============================================
-// PUBLISH TDS
+// LOCAL TDS REPORT
 // ============================================
 void publishTDS() {
-  JsonDocument doc;
-
-  doc["device_id"] = deviceConfig.device_id;
-  doc["tds"] = tdsPPM;
-
-  char output[128];
-  size_t outLen = serializeJson(doc, output, sizeof(output));
-  if (outLen == 0) {
-    return;
-  }
-  publishMQTT(TOPIC_TDS_OUT, output);
+  DEBUG_PRINT("TDS: ");
+  DEBUG_PRINT(tdsPPM);
+  DEBUG_PRINTLN(" ppm");
 }

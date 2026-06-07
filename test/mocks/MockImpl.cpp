@@ -34,7 +34,7 @@ void displayError(const char *msg) {}
 void setRelay(bool on) {}
 bool isRelayOn() { return false; }
 
-// Define UART bridge mocks used by mqtt_handler config sync path
+// Define UART bridge mocks used by local config sync path
 void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs) {}
 bool isPaymentEspConnected() { return false; }
 uint32_t getUartParseErrorCount() { return 0; }

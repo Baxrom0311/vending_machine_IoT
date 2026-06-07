@@ -6,7 +6,7 @@
 // ============================================
 // ESP32 #2 - MAIN CONTROLLER
 // ============================================
-// Bu ESP32 display, relay, sensors, WiFi/MQTT
+// Bu ESP32 display, relay, sensors, optional WiFi
 // va UART orqali Payment ESP32 dan xabar oladi
 //
 

@@ -10,7 +10,7 @@
  *   - Relay (Solenoid Valve)
  *   - Flow Sensor, TDS Sensor
  *   - START/PAUSE Buttons
- *   - WiFi / MQTT
+ *   - Optional WiFi status
  *   - UART orqali Payment ESP32 dan xabar oladi
  *
  * Payment ESP32 dan UART orqali pul qabul qiladi.
@@ -26,14 +26,12 @@
 #include "diagnostics.h"
 #include "display.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
+#include "local_events.h"
 #include "relay_control.h"
 #include "sensors.h"
 #include "serial_config.h"
 #include "state_machine.h"
 #include "uart_receiver.h" // Replaces payment.h - receives from Payment ESP32
-#include <ArduinoJson.h>   // Required for heartbeat
-#include <WiFi.h>          // For heartbeat WiFi.localIP() and WiFi.RSSI()
 #include <cstdio>
 #include <Preferences.h>
 #include <esp_system.h>
@@ -51,13 +49,7 @@ extern unsigned long lastSessionActivity;
 
 // Constants
 const int WATCHDOG_TIMEOUT_SECONDS = 30;
-const unsigned long MQTT_STALL_RECOVERY_MS = 15UL * 60UL * 1000UL;
-const unsigned long NETWORK_RECOVERY_COOLDOWN_MS = 10UL * 60UL * 1000UL;
-const unsigned long MQTT_RECONNECT_MIN_INTERVAL_MS = 5000UL;
 const uint8_t SAFE_MODE_FAULT_THRESHOLD = 3;
-static unsigned long lastMqttHealthyMs = 0;
-static unsigned long lastNetworkRecoveryMs = 0;
-static unsigned long lastMqttReconnectAttemptMs = 0;
 static bool safeModeActive = false;
 static uint8_t bootFaultCount = 0;
 static esp_reset_reason_t lastResetReason = ESP_RST_UNKNOWN;
@@ -175,25 +167,18 @@ void setup() {
     initUartReceiver(); // UART from Payment ESP32 (replaces initPayment)
   }
 
-  // WiFi / MQTT (only if configured)
-  if (configured && !safeModeActive) {
+  // Optional WiFi status connection. Local vending works without network.
+  if (deviceConfig.wifi_ssid[0] != '\0' && !safeModeActive) {
     setupWiFi();
-    setupMQTT();
   }
-
-  lastMqttHealthyMs = millis();
-  lastNetworkRecoveryMs = 0;
-  lastMqttReconnectAttemptMs = 0;
 
   DEBUG_PRINTLN("=== SYSTEM READY ===\n");
   DEBUG_PRINT("Firmware Version: ");
   DEBUG_PRINTLN(FIRMWARE_VERSION);
 
-  if (configured) {
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Device started %s", FIRMWARE_VERSION);
-    publishLog("SYSTEM", msg);
-  }
+  char msg[64];
+  snprintf(msg, sizeof(msg), "Device started %s", FIRMWARE_VERSION);
+  publishLog("SYSTEM", msg);
 }
 
 // ============================================
@@ -204,8 +189,6 @@ void loop() {
   esp_task_wdt_reset();
 
   unsigned long now = millis();
-
-  processMqttPersistence(false);
 
   if (safeModeActive) {
     // Keep actuator safe and only allow serial recovery commands.
@@ -228,50 +211,9 @@ void loop() {
     return;
   }
 
-  // WiFi connection state machine
-  if (isConfigured()) {
+  // Optional WiFi connection state machine
+  if (deviceConfig.wifi_ssid[0] != '\0') {
     processWiFi();
-
-    // MQTT Connection - only if WiFi is connected
-    if (WiFi.status() == WL_CONNECTED) {
-      if (!mqttClient.connected()) {
-        // Allow reconnect in all non-dispensing states with a short outer gate.
-        const bool reconnectSafe = (currentState != DISPENSING);
-        if (reconnectSafe &&
-            (now - lastMqttReconnectAttemptMs) >=
-                MQTT_RECONNECT_MIN_INTERVAL_MS) {
-          lastMqttReconnectAttemptMs = now;
-          reconnectMQTT();
-        }
-      } else {
-        // Only process MQTT loop if connected
-        mqttClient.loop();
-      }
-    }
-
-    const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-    if (wifiConnected && mqttClient.connected()) {
-      lastMqttHealthyMs = now;
-    } else if (!wifiConnected) {
-      // Network is genuinely down, keep timer fresh to avoid false "stalled"
-      // recovery triggers.
-      lastMqttHealthyMs = now;
-    } else if (currentState == IDLE &&
-               (now - lastMqttHealthyMs) >= MQTT_STALL_RECOVERY_MS &&
-               (now - lastNetworkRecoveryMs) >=
-                   NETWORK_RECOVERY_COOLDOWN_MS) {
-      lastNetworkRecoveryMs = now;
-      DEBUG_PRINTLN("⚠️ MQTT stalled too long, restarting WiFi stack");
-      mqttClient.disconnect();
-      setupWiFi();
-      reconnectMQTT();
-      lastMqttHealthyMs = now;
-    }
-  }
-
-  // Process network config apply/rollback
-  if (isConfigured()) {
-    processNetworkApply();
   }
 
   // Task 1: UART Payment Check (from ESP32 #1)
@@ -306,32 +248,20 @@ void loop() {
   if (now - lastHeartbeat >= config.heartbeatInterval) {
     lastHeartbeat = now;
     publishStatus();
-
-    // MEDIUM FIX: Heartbeat with all required fields per MQTT_API.md
-    JsonDocument hb;
-    hb["status"] = "online"; // MEDIUM FIX: Added status field
-    hb["uptime"] = millis() / 1000;
-    hb["ip"] = WiFi.localIP().toString();
-    hb["rssi"] = WiFi.RSSI();
-    hb["ssid"] = WiFi.SSID(); // LOW FIX: Added ssid for UI
-    hb["firmware_version"] = FIRMWARE_VERSION;
-    hb["free_heap"] = ESP.getFreeHeap();
-    hb["min_free_heap"] = ESP.getMinFreeHeap();
-    hb["reset_reason"] = resetReasonToString(lastResetReason);
-    hb["safe_mode"] = safeModeActive;
-    hb["boot_faults"] = bootFaultCount;
-    hb["mqtt_reconnect_attempts"] = getMqttReconnectAttemptCount();
-    hb["mqtt_reconnect_failures"] = getMqttReconnectFailureCount();
-    hb["mqtt_json_parse_errors"] = getMqttJsonParseErrorCount();
-    hb["uart_parse_errors"] = getUartParseErrorCount();
-    hb["uart_frame_drops"] = getUartFrameDropCount();
-    char hbStr[256];
-    size_t hbLen = serializeJson(hb, hbStr, sizeof(hbStr));
-    if (hbLen > 0) {
-      publishMQTT(TOPIC_HEARTBEAT, hbStr);
-    } else {
-      publishLog("ERROR", "Heartbeat JSON overflow");
-    }
+    DEBUG_PRINT("LOCAL_HEARTBEAT uptime=");
+    DEBUG_PRINT(millis() / 1000);
+    DEBUG_PRINT(" heap=");
+    DEBUG_PRINT(ESP.getFreeHeap());
+    DEBUG_PRINT(" reset=");
+    DEBUG_PRINT(resetReasonToString(lastResetReason));
+    DEBUG_PRINT(" safe_mode=");
+    DEBUG_PRINT(safeModeActive ? "YES" : "NO");
+    DEBUG_PRINT(" boot_faults=");
+    DEBUG_PRINT(bootFaultCount);
+    DEBUG_PRINT(" uart_parse_errors=");
+    DEBUG_PRINT(getUartParseErrorCount());
+    DEBUG_PRINT(" uart_frame_drops=");
+    DEBUG_PRINTLN(getUartFrameDropCount());
   }
 
   // Task 7: Button Handling (edge-based debounce)

@@ -2,7 +2,7 @@
 #include "debug.h"
 #include <Arduino.h>
 
-static const int CURRENT_CONFIG_VERSION = 3;
+static const int CURRENT_CONFIG_VERSION = 5;
 
 // ============================================
 // VALIDATE CONFIGURATION
@@ -16,6 +16,10 @@ void validateConfig() {
       deviceConfig.cashPulseValue = 500;
       deviceConfig.cashPulseGapMs = 600;
       DEBUG_PRINTLN("Config migration: cash defaults updated to 500/600");
+    }
+    if (deviceConfig.cashPulseValue == 500 && deviceConfig.cashPulseGapMs == 600) {
+      deviceConfig.cashPulseValue = 1000;
+      DEBUG_PRINTLN("Config migration: cash pulse value updated to 1000");
     }
     if (deviceConfig.pricePerLiter == 1000) {
       deviceConfig.pricePerLiter = 500;
@@ -38,17 +42,13 @@ void validateConfig() {
     deviceConfig.pulsesPerLiter = 450.0f;
     changed = true;
   }
-  if (deviceConfig.mqtt_port <= 0) {
-    deviceConfig.mqtt_port = 1883;
-    changed = true;
-  }
   if (deviceConfig.tdsCalibrationFactor <= 0.01 ||
       deviceConfig.tdsCalibrationFactor > 10.0) {
     deviceConfig.tdsCalibrationFactor = 0.5; // Reset to reasonable default
     changed = true;
   }
   if (deviceConfig.cashPulseValue <= 0) {
-    deviceConfig.cashPulseValue = 500;
+    deviceConfig.cashPulseValue = 1000;
     changed = true;
   }
   if (deviceConfig.cashPulseGapMs < 20 || deviceConfig.cashPulseGapMs > 1000) {

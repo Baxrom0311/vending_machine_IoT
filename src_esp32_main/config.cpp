@@ -11,25 +11,6 @@
 Config config;
 
 // ============================================
-// MQTT TOPICS (Generated dynamically)
-// ============================================
-char TOPIC_PAYMENT_IN[64];
-char TOPIC_STATUS_OUT[64];
-char TOPIC_CONFIG_IN[64];
-char TOPIC_LOG_OUT[64];
-char TOPIC_TDS_OUT[64];
-char TOPIC_HEARTBEAT[64];
-char TOPIC_TELEMETRY[64];
-char TOPIC_ALERTS[64];
-char TOPIC_DIAGNOSTICS[64];
-
-// Fleet Management Topics
-char TOPIC_BROADCAST_CONFIG[64];
-char TOPIC_BROADCAST_COMMAND[64];
-char TOPIC_GROUP_CONFIG[64];
-char TOPIC_GROUP_COMMAND[64];
-
-// ============================================
 // WIFI SETUP
 // ============================================
 
@@ -124,8 +105,6 @@ void applyRuntimeConfig() {
   config.displayUpdateInterval = deviceConfig.displayUpdateInterval;
   config.tdsCheckInterval = deviceConfig.tdsCheckInterval;
   config.heartbeatInterval = deviceConfig.heartbeatInterval;
-
-  generateMQTTTopics();
 }
 
 // ============================================
@@ -134,50 +113,4 @@ void applyRuntimeConfig() {
 void initConfig() {
   applyRuntimeConfig();
   DEBUG_PRINTLN("Config initialized from storage");
-}
-
-// ============================================
-// MQTT TOPIC GENERATION
-// ============================================
-void generateMQTTTopics() {
-  const char *deviceId = deviceConfig.device_id;
-  if (!deviceId || deviceId[0] == '\0') {
-    deviceId = "device_001";
-  }
-
-  snprintf(TOPIC_PAYMENT_IN, sizeof(TOPIC_PAYMENT_IN), "vending/%s/payment/in",
-           deviceId);
-  snprintf(TOPIC_STATUS_OUT, sizeof(TOPIC_STATUS_OUT), "vending/%s/status/out",
-           deviceId);
-  snprintf(TOPIC_CONFIG_IN, sizeof(TOPIC_CONFIG_IN), "vending/%s/config/in",
-           deviceId);
-  snprintf(TOPIC_LOG_OUT, sizeof(TOPIC_LOG_OUT), "vending/%s/log/out",
-           deviceId);
-  snprintf(TOPIC_TDS_OUT, sizeof(TOPIC_TDS_OUT), "vending/%s/tds/out",
-           deviceId);
-  snprintf(TOPIC_HEARTBEAT, sizeof(TOPIC_HEARTBEAT), "vending/%s/heartbeat",
-           deviceId);
-  snprintf(TOPIC_TELEMETRY, sizeof(TOPIC_TELEMETRY), "vending/%s/telemetry",
-           deviceId);
-  snprintf(TOPIC_ALERTS, sizeof(TOPIC_ALERTS), "vending/%s/alerts", deviceId);
-  snprintf(TOPIC_DIAGNOSTICS, sizeof(TOPIC_DIAGNOSTICS),
-           "vending/%s/diagnostics", deviceId);
-
-  // Broadcast topics (all devices)
-  // Broadcast topics (all devices)
-  snprintf(TOPIC_BROADCAST_CONFIG, sizeof(TOPIC_BROADCAST_CONFIG),
-           "vending/broadcast/config");
-  snprintf(TOPIC_BROADCAST_COMMAND, sizeof(TOPIC_BROADCAST_COMMAND),
-           "vending/broadcast/command");
-
-  // Group topics (if groupId is set)
-  if (strlen(deviceConfig.groupId) > 0) {
-    snprintf(TOPIC_GROUP_CONFIG, sizeof(TOPIC_GROUP_CONFIG),
-             "vending/group/%s/config", deviceConfig.groupId);
-    snprintf(TOPIC_GROUP_COMMAND, sizeof(TOPIC_GROUP_COMMAND),
-             "vending/group/%s/command", deviceConfig.groupId);
-  } else {
-    TOPIC_GROUP_CONFIG[0] = '\0'; // Empty if no group
-    TOPIC_GROUP_COMMAND[0] = '\0';
-  }
 }

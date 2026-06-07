@@ -11,7 +11,6 @@ struct HealthCheck {
   bool relayOk;
   bool displayOk;
   bool wifiOk;
-  bool mqttOk;
   uint32_t timestamp;
   int failureCount;
 };

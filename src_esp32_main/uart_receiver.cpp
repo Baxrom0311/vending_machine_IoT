@@ -4,7 +4,7 @@
 #include "config_storage.h"
 #include "debug.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
+#include "local_events.h"
 #include "state_machine.h"
 
 // ============================================

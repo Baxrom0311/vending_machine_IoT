@@ -3,6 +3,7 @@
 #include "cash_handler.h"
 #include "hardware.h"
 #include <Preferences.h>
+#include <climits>
 #include <cstring>
 
 #ifndef ENABLE_DEBUG_LOGS
@@ -207,7 +208,17 @@ static bool processIncomingMessage(const char *message, uint32_t expectedAckSeq,
 
 static bool enqueuePaymentTx(const PaymentTx &tx) {
   if (offlineBufferCount >= OFFLINE_BUFFER_SIZE) {
-    return false;
+    PaymentTx &last = offlineBuffer[OFFLINE_BUFFER_SIZE - 1];
+    if (tx.amount <= 0 || last.amount > INT_MAX - tx.amount) {
+      return false;
+    }
+    last.amount += tx.amount;
+    markTxStateDirty();
+    PAY_LOG_PRINT("⚠️ TX queue full, merged payment into seq ");
+    PAY_LOG_PRINT(last.seq);
+    PAY_LOG_PRINT(" total=");
+    PAY_LOG_PRINTLN(last.amount);
+    return true;
   }
   offlineBuffer[offlineBufferCount++] = tx;
   markTxStateDirty();
@@ -475,3 +486,18 @@ void processUartReceive() {
 // STATUS
 // ============================================
 bool isMainEspConnected() { return mainEspConnected; }
+
+void clearPaymentQueue() {
+  memset(offlineBuffer, 0, sizeof(offlineBuffer));
+  offlineBufferCount = 0;
+  txActive = false;
+  txAwaitingAck = false;
+  txRetryCount = 0;
+  txAckDeadlineMs = 0;
+  txNextAttemptMs = 0;
+  markTxStateDirty();
+  flushTxStateIfNeeded(true);
+  PAY_LOG_PRINTLN("OK: Payment TX queue cleared");
+}
+
+int getPaymentQueueCount() { return offlineBufferCount; }

@@ -3,11 +3,10 @@
 #include "debug.h"
 #include "display.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
+#include "local_events.h"
 #include "relay_control.h"
 #include "sensors.h"
 #include "state_machine.h"
-#include <ArduinoJson.h>
 #include <WiFi.h>
 
 static HealthCheck lastHealthCheck;
@@ -100,16 +99,6 @@ HealthCheck runDiagnostics() {
     DEBUG_PRINTLN("✓ WiFi: connected");
   }
 
-  // 7. MQTT Test
-  health.mqttOk = mqttClient.connected();
-
-  if (!health.mqttOk) {
-    health.failureCount++;
-    DEBUG_PRINTLN("⚠️ MQTT: disconnected");
-  } else {
-    DEBUG_PRINTLN("✓ MQTT: connected");
-  }
-
   DEBUG_PRINTF("Diagnostics complete. Failures: %d\n", health.failureCount);
 
   // Store for later reference
@@ -128,61 +117,27 @@ HealthCheck runDiagnostics() {
   if (!health.tdsSensorOk) {
     publishLog("DIAG_FAIL", "TDS sensor invalid");
   }
-  if (!health.wifiOk || !health.mqttOk) {
-    // Can't publish if no network, but let's try
-  }
-
   return health;
 }
 
-// Publish health report to MQTT
+// Print health report locally over serial/debug
 void publishHealthReport(const HealthCheck &health) {
-  if (!mqttClient.connected()) {
-    DEBUG_PRINTLN("Cannot publish diagnostics: MQTT disconnected");
-    return;
-  }
-
-  JsonDocument doc;
-
-  doc["timestamp"] = health.timestamp;
-
-  JsonObject components = doc["components"].to<JsonObject>();
-  components["flowSensor"] = health.flowSensorOk;
-  components["tdsSensor"] = health.tdsSensorOk;
-  components["cashAcceptor"] = health.cashAcceptorOk;
-  components["relay"] = health.relayOk;
-  components["display"] = health.displayOk;
-  components["wifi"] = health.wifiOk;
-  components["mqtt"] = health.mqttOk;
-
-  doc["failureCount"] = health.failureCount;
-
-  // List failed components
-  JsonArray failed = doc["failedComponents"].to<JsonArray>();
-  if (!health.flowSensorOk)
-    failed.add("flowSensor");
-  if (!health.tdsSensorOk)
-    failed.add("tdsSensor");
-  if (!health.cashAcceptorOk)
-    failed.add("cashAcceptor");
-  if (!health.relayOk)
-    failed.add("relay");
-  if (!health.displayOk)
-    failed.add("display");
-  if (!health.wifiOk)
-    failed.add("wifi");
-  if (!health.mqttOk)
-    failed.add("mqtt");
-
-  char payload[512];
-  size_t payloadLen = serializeJson(doc, payload, sizeof(payload));
-  if (payloadLen == 0) {
-    DEBUG_PRINTLN("Diagnostics payload overflow");
-    return;
-  }
-
-  mqttClient.publish(TOPIC_DIAGNOSTICS, payload, false);
-  DEBUG_PRINTLN("Health report published to MQTT");
+  DEBUG_PRINT("HEALTH timestamp=");
+  DEBUG_PRINT(health.timestamp);
+  DEBUG_PRINT(" failures=");
+  DEBUG_PRINT(health.failureCount);
+  DEBUG_PRINT(" flow=");
+  DEBUG_PRINT(health.flowSensorOk ? "OK" : "FAIL");
+  DEBUG_PRINT(" tds=");
+  DEBUG_PRINT(health.tdsSensorOk ? "OK" : "FAIL");
+  DEBUG_PRINT(" cash=");
+  DEBUG_PRINT(health.cashAcceptorOk ? "OK" : "FAIL");
+  DEBUG_PRINT(" relay=");
+  DEBUG_PRINT(health.relayOk ? "OK" : "FAIL");
+  DEBUG_PRINT(" display=");
+  DEBUG_PRINT(health.displayOk ? "OK" : "FAIL");
+  DEBUG_PRINT(" wifi=");
+  DEBUG_PRINTLN(health.wifiOk ? "OK" : "FAIL");
 }
 
 // Get last health check results

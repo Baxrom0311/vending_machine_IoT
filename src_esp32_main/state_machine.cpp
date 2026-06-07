@@ -3,7 +3,7 @@
 #include "debug.h"
 #include "display.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
+#include "local_events.h"
 #include "relay_control.h"
 
 // Note: lastSessionActivity is declared extern in state_machine.h

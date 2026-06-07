@@ -2,7 +2,6 @@
 #include "config.h"
 #include "config_storage.h"
 #include "hardware.h"
-#include "mqtt_handler.h"
 #include "relay_control.h"
 #include "sensors.h"
 #include "state_machine.h"
@@ -80,7 +79,6 @@ void processCommand(String cmd) {
   if (awaitingFactoryResetConfirm) {
     awaitingFactoryResetConfirm = false;
     if (cmdUpper == "YES") {
-      processMqttPersistence(true);
       flushUartReceiverPersistence();
       loadDefaultConfig();
       saveConfigToStorage();
@@ -126,88 +124,13 @@ void processCommand(String cmd) {
     }
   }
 
-  // SET_MQTT:broker:port
-  else if (cmdUpper.startsWith("SET_MQTT:")) {
-    int idx1 = cmd.indexOf(':');
-    int idx2 = cmd.indexOf(':', idx1 + 1);
-
-    if (idx2 > 0) {
-      String broker = cmd.substring(idx1 + 1, idx2);
-      int port = cmd.substring(idx2 + 1).toInt();
-
-      if (broker.length() > 0 && broker.length() < 128 && port > 0 &&
-          port < 65536) {
-        copyToBuffer(deviceConfig.mqtt_broker, sizeof(deviceConfig.mqtt_broker),
-                     broker);
-        deviceConfig.mqtt_port = port;
-        Serial.println("OK: MQTT broker configured");
-        Serial.println("Note: Use SAVE_CONFIG to persist");
-      } else {
-        Serial.println("ERROR: Invalid broker or port");
-      }
-    } else {
-      Serial.println("ERROR: Format: SET_MQTT:broker:port");
-    }
-  }
-
-  // SET_MQTT_AUTH:username:password
-  else if (cmdUpper.startsWith("SET_MQTT_AUTH:")) {
-    int idx1 = cmd.indexOf(':');
-    int idx2 = cmd.indexOf(':', idx1 + 1);
-
-    if (idx2 > 0) {
-      String user = cmd.substring(idx1 + 1, idx2);
-      String pass = cmd.substring(idx2 + 1);
-
-      if (user.length() < 32 && pass.length() < 64) {
-        copyToBuffer(deviceConfig.mqtt_username,
-                     sizeof(deviceConfig.mqtt_username), user);
-        copyToBuffer(deviceConfig.mqtt_password,
-                     sizeof(deviceConfig.mqtt_password), pass);
-        Serial.println("OK: MQTT auth configured");
-      } else {
-        Serial.println("ERROR: Invalid MQTT auth length");
-      }
-    } else {
-      Serial.println("ERROR: Format: SET_MQTT_AUTH:username:password");
-    }
-  }
-
-  // SET_API_SECRET:value
-  else if (cmdUpper.startsWith("SET_API_SECRET:")) {
-    String secret = cmd.substring(15);
-    if (secret.length() < 64) {
-      copyToBuffer(deviceConfig.api_secret, sizeof(deviceConfig.api_secret),
-                   secret);
-      Serial.println("OK: API secret updated");
-    } else {
-      Serial.println("ERROR: API secret too long (max 63 chars)");
-    }
-  }
-
-  // SET_REQUIRE_SIGNED:1|0
-  else if (cmdUpper.startsWith("SET_REQUIRE_SIGNED:")) {
-    int val = cmd.substring(19).toInt();
-    deviceConfig.requireSignedMessages = (val == 1);
-    Serial.print("OK: Require signed messages ");
-    Serial.println(deviceConfig.requireSignedMessages ? "enabled" : "disabled");
-  }
-
-  // SET_ALLOW_REMOTE_NETCFG:1|0
-  else if (cmdUpper.startsWith("SET_ALLOW_REMOTE_NETCFG:")) {
-    int val = cmd.substring(24).toInt();
-    deviceConfig.allowRemoteNetworkConfig = (val == 1);
-    Serial.print("OK: Remote network config ");
-    Serial.println(deviceConfig.allowRemoteNetworkConfig ? "allowed"
-                                                         : "disabled");
-  }
-
   // SET_DEVICE_ID:name
   else if (cmdUpper.startsWith("SET_DEVICE_ID:")) {
     String devId = cmd.substring(14);
     if (devId.length() > 0 && devId.length() < 32) {
       copyToBuffer(deviceConfig.device_id, sizeof(deviceConfig.device_id),
                    devId);
+      deviceConfig.configured = true;
       Serial.println("OK: Device ID set to " + devId);
     } else {
       Serial.println("ERROR: Invalid device ID");
@@ -393,43 +316,15 @@ void processCommand(String cmd) {
   else if (cmdUpper == "APPLY_CONFIG") {
     applyRuntimeConfig();
     applyConfigStateEffects();
-    setupWiFi();
-    mqttClient.disconnect();
-    mqttClient.setServer(deviceConfig.mqtt_broker, deviceConfig.mqtt_port);
-    reconnectMQTT();
+    if (deviceConfig.wifi_ssid[0] != '\0') {
+      setupWiFi();
+    }
     Serial.println("OK: Configuration applied");
-  }
-
-  // SET_GROUP:groupId
-  else if (cmdUpper.startsWith("SET_GROUP:")) {
-    String groupId = cmd.substring(10);
-    groupId.trim();
-    if (groupId.length() > 0 && groupId.length() < 32) {
-      strncpy(deviceConfig.groupId, groupId.c_str(), 31);
-      deviceConfig.groupId[31] = '\0';
-      saveConfigToStorage();
-      generateMQTTTopics(); // Regenerate topics with new groupId
-      Serial.print("OK: Group ID set to '");
-      Serial.print(deviceConfig.groupId);
-      Serial.println("'");
-      Serial.println("Note: Reconnect MQTT to subscribe to group topics");
-    } else {
-      Serial.println("ERROR: Group ID must be 1-31 characters");
-    }
-  }
-
-  // GET_GROUP
-  else if (cmdUpper == "GET_GROUP") {
-    if (strlen(deviceConfig.groupId) > 0) {
-      Serial.print("Group ID: ");
-      Serial.println(deviceConfig.groupId);
-    } else {
-      Serial.println("Group ID: (not set)");
-    }
   }
 
   // SAVE_CONFIG
   else if (cmdUpper == "SAVE_CONFIG") {
+    deviceConfig.configured = true;
     saveConfigToStorage();
     Serial.println("OK: Configuration saved to EEPROM");
   }
@@ -457,7 +352,6 @@ void processCommand(String cmd) {
   // RESTART
   else if (cmdUpper == "RESTART") {
     Serial.println("OK: Restarting device...");
-    processMqttPersistence(true);
     flushUartReceiverPersistence();
     delay(500);
     ESP.restart();
@@ -511,21 +405,13 @@ void showHelp() {
   Serial.println("\n[Configuration]");
   Serial.println(
       "  GET_CONFIG                       - Show current configuration");
-  Serial.println("  SET_WIFI:ssid:password           - Set WiFi credentials");
-  Serial.println("  SET_MQTT:broker:port             - Set MQTT broker");
-  Serial.println(
-      "  SET_MQTT_AUTH:user:pass          - Set MQTT authentication");
+  Serial.println("  SET_WIFI:ssid:password           - Set optional WiFi credentials");
   Serial.println("  SET_DEVICE_ID:name               - Set device identifier");
   Serial.println(
       "  SET_PRICE:amount                 - Set price per liter (so'm)");
   Serial.println("  SET_TIMEOUT:seconds              - Set session timeout");
   Serial.println(
       "  SET_RELAY_ACTIVE:1|0             - Relay mode (1=ACTIVE_HIGH, 0=ACTIVE_LOW)");
-  Serial.println("  SET_API_SECRET:value             - Set API signing secret");
-  Serial.println(
-      "  SET_REQUIRE_SIGNED:1|0           - Require signed MQTT messages");
-  Serial.println(
-      "  SET_ALLOW_REMOTE_NETCFG:1|0      - Allow WiFi/MQTT via MQTT");
   Serial.println(
       "  SET_CASH_PULSE:value             - Cash acceptor so'm per pulse");
   Serial.println("  SET_CASH_GAP:ms                  - Cash pulse gap (ms)");
@@ -550,8 +436,6 @@ void showHelp() {
 
   Serial.println("\n[System]");
   Serial.println("  SAVE_CONFIG              - Save config to flash");
-  Serial.println("  SET_GROUP:id             - Set group ID for fleet");
-  Serial.println("  GET_GROUP                - Show current group ID");
   Serial.println("  GET_STATUS                       - Show device status");
   Serial.println("  RESTART                          - Restart device");
   Serial.println("  TEST RELAY [ON|OFF|RAW 0|1]      - Test relay hardware");

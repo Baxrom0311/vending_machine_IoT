@@ -6,7 +6,7 @@
 // ============================================
 // CONFIGURATION
 // ============================================
-#define CASH_PULSE_VALUE 500 // So'm per pulse (default)
+#define CASH_PULSE_VALUE 1000 // So'm per pulse
 #define CASH_PULSE_GAP_MS 600 // Minimum gap between pulse groups
 
 // Pulse width filtering (noise protection)

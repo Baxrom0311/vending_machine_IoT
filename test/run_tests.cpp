@@ -1,13 +1,12 @@
 #include "mocks/Arduino.h"
 #include "mocks/Preferences.h"
-#include "mocks/PubSubClient.h"
 #include "mocks/WiFi.h"
 #include "mocks/display.h"
 #include "mocks/esp_task_wdt.h"
 #include <unity.h>
 
 // Include implementations for linkage
-#include "mocks/MockDeps.cpp" // Data/Config Mocks (no MQTT handler)
+#include "mocks/MockDeps.cpp" // Data/config mocks
 #include "mocks/MockImpl.cpp" // Arduino/Preferences globals
 
 // Include source files under test
@@ -16,9 +15,7 @@
 #undef copyToBuffer
 #include "../../src_esp32_main/config_storage_validation.cpp"
 #include "../../src_esp32_main/state_machine.cpp"
-#define copyToBuffer copyToBuffer_mqtt
-#include "../../src_esp32_main/mqtt_handler.cpp" // Now included!
-#undef copyToBuffer
+#include "../../src_esp32_main/local_events.cpp"
 
 // ============================================
 // SETUP / TEARDOWN
@@ -37,18 +34,8 @@ void setUp(void) {
   config.pricePerLiter = 1000;
   config.pulsesPerLiter = 450.0;
   config.sessionTimeout = 300000;
-  // config.requireSignedMessages does not exist in Config struct
-
   // Sync deviceConfig
   deviceConfig.pricePerLiter = 1000;
-  deviceConfig.requireSignedMessages = false;
-
-  // Init MQTT topics
-  strcpy(TOPIC_PAYMENT_IN, "water/payment");
-  strcpy(TOPIC_CONFIG_IN, "water/config");
-  strcpy(TOPIC_BROADCAST_COMMAND, "water/broadcast/command");
-  strcpy(TOPIC_GROUP_COMMAND, "water/group/command");
-  // ... others as needed
 }
 
 void tearDown(void) {
@@ -120,48 +107,23 @@ void test_sm_flow_logic(void) {
 // ============================================
 // INTEGRATION TESTS
 // ============================================
-void test_integration_mqtt_payment(void) {
-  // 1. Setup
+void test_integration_local_payment(void) {
   currentState = IDLE;
   balance = 0;
-  deviceConfig.requireSignedMessages = false; // Bypass sig
-  strcpy(TOPIC_PAYMENT_IN, "water/payment");
 
-  // 2. Prepare Payload
-  // {"amount": 5000, "source": "app"}
-  const char *payload = "{\"amount\": 5000, \"source\": \"app\"}";
+  processPayment(5000, "cash_uart", nullptr, nullptr);
 
-  // 3. Trigger MQTT Callback
-  // We cast const char* to char* because callback signature is not const
-  // (legacy Arduino MQTT) We copy to buffer to be safe
-  char topicBuf[64];
-  strcpy(topicBuf, "water/payment");
-  char payloadBuf[128];
-  strcpy(payloadBuf, payload);
-
-  mqttCallback(topicBuf, (byte *)payloadBuf, strlen(payload));
-
-  // 4. Assert
-  // Balance should increase by 5000
   TEST_ASSERT_EQUAL(5000, balance);
-  // State should be ACTIVE (ready to dispense)
   TEST_ASSERT_EQUAL(ACTIVE, currentState);
-  // Session start balance set
   TEST_ASSERT_EQUAL_FLOAT(5000, sessionStartBalance);
 }
 
-void test_integration_mqtt_zero_payment_fail(void) {
+void test_integration_local_zero_payment_fail(void) {
   currentState = IDLE;
   balance = 0;
-  const char *payload = "{\"amount\": 0, \"source\": \"app\"}";
 
-  char topicBuf[] = "water/payment";
-  char payloadBuf[128];
-  strcpy(payloadBuf, payload);
+  processPayment(0, "cash_uart", nullptr, nullptr);
 
-  mqttCallback(topicBuf, (byte *)payloadBuf, strlen(payload));
-
-  // Should reject 0 amount
   TEST_ASSERT_EQUAL(0, balance);
   TEST_ASSERT_EQUAL(IDLE, currentState);
 }
@@ -183,8 +145,8 @@ int main(int argc, char **argv) {
   RUN_TEST(test_sm_flow_logic);
 
   // Integration
-  RUN_TEST(test_integration_mqtt_payment);
-  RUN_TEST(test_integration_mqtt_zero_payment_fail);
+  RUN_TEST(test_integration_local_payment);
+  RUN_TEST(test_integration_local_zero_payment_fail);
 
   UNITY_END();
   return 0;

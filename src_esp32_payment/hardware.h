@@ -18,8 +18,8 @@
 // ============================================
 // CASH ACCEPTOR
 // ============================================
-#define CASH_PULSE_PIN 32 // Genius 7 pulse input
-     // INPUT_PULLUP, FALLING edge
+#define CASH_PULSE_PIN 32 // NV9USB+ Vend pulse input (open collector)
+     // Use 3.3V pull-up/level shifter. Never feed 12V into this GPIO.
 
 // ============================================
 // UART (to Main ESP32)

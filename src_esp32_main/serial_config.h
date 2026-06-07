@@ -9,9 +9,7 @@
 /*
  * Commands:
  * - GET_CONFIG                    → Show all configuration
- * - SET_WIFI:ssid:password        → Set WiFi credentials
- * - SET_MQTT:broker:port          → Set MQTT broker
- * - SET_MQTT_AUTH:user:pass       → Set MQTT auth
+ * - SET_WIFI:ssid:password        → Set optional WiFi credentials
  * - SET_DEVICE_ID:name            → Set device ID
  * - SET_PRICE:amount              → Set price per liter
  * - SET_TIMEOUT:seconds           → Set session timeout

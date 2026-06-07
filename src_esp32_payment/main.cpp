@@ -8,6 +8,7 @@
 #include "hardware.h"
 #include "uart_sender.h"
 #include <Arduino.h>
+#include <cstring>
 #include <esp_task_wdt.h>
 
 #ifndef ENABLE_DEBUG_LOGS
@@ -26,6 +27,42 @@
 // CONFIGURATION
 // ============================================
 #define LOOP_DELAY_MS 1
+
+static void processUsbCommands() {
+  static char cmdBuffer[40] = {0};
+  static uint8_t cmdLen = 0;
+
+  while (Serial.available()) {
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') {
+      continue;
+    }
+
+    if (ch == '\n') {
+      cmdBuffer[cmdLen] = '\0';
+      cmdLen = 0;
+
+      if (strcmp(cmdBuffer, "CLEAR_QUEUE") == 0) {
+        clearPaymentQueue();
+      } else if (strcmp(cmdBuffer, "QUEUE_STATUS") == 0) {
+        PAY_MAIN_LOG_PRINT("QUEUE_COUNT=");
+        PAY_MAIN_LOG_PRINTLN(getPaymentQueueCount());
+        PAY_MAIN_LOG_PRINT("MAIN_CONNECTED=");
+        PAY_MAIN_LOG_PRINTLN(isMainEspConnected() ? "YES" : "NO");
+      } else if (cmdBuffer[0] != '\0') {
+        PAY_MAIN_LOG_PRINT("UNKNOWN_CMD=");
+        PAY_MAIN_LOG_PRINTLN(cmdBuffer);
+      }
+      continue;
+    }
+
+    if (cmdLen < sizeof(cmdBuffer) - 1) {
+      cmdBuffer[cmdLen++] = ch;
+    } else {
+      cmdLen = 0;
+    }
+  }
+}
 
 // ============================================
 // SETUP
@@ -94,6 +131,9 @@ void loop() {
 
   // Process cash pulses
   processCashPulses();
+
+  // Process USB serial debug commands
+  processUsbCommands();
 
   // Check for pending payment
   int payment = getPendingPayment();
