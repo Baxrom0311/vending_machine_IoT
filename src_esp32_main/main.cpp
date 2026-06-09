@@ -6,11 +6,8 @@
  * eWater Vending Machine
  *
  * Bu ESP32 asosiy controller:
- *   - Display (LCD 20x4)
  *   - Relay (Solenoid Valve)
- *   - Flow Sensor, TDS Sensor
  *   - START/PAUSE Buttons
- *   - Optional WiFi status
  *   - UART orqali Payment ESP32 dan xabar oladi
  *
  * Payment ESP32 dan UART orqali pul qabul qiladi.
@@ -28,8 +25,6 @@
 #include "hardware.h"
 #include "local_events.h"
 #include "relay_control.h"
-#include "sensors.h"
-#include "serial_config.h"
 #include "state_machine.h"
 #include "uart_receiver.h" // Replaces payment.h - receives from Payment ESP32
 #include <cstdio>
@@ -41,8 +36,6 @@
 // TIMERS (Non-blocking)
 // ============================================
 // Note: lastPaymentCheck removed - payments now come via UART
-unsigned long lastDisplayUpdate = 0;
-unsigned long lastTdsCheck = 0;
 unsigned long lastHeartbeat = 0;
 // Globals from state_machine.cpp
 extern unsigned long lastSessionActivity;
@@ -132,44 +125,28 @@ void setup() {
 
   // GPIO Setup
   pinMode(RELAY_PIN, OUTPUT);
+  pinMode(RELAY2_PIN, OUTPUT);
   pinMode(START_BUTTON_PIN, INPUT_PULLUP);
   pinMode(PAUSE_BUTTON_PIN, INPUT_PULLUP);
 
   // Load config from EEPROM FIRST
   initConfigStorage();
   initConfig();
-  setRelay(false);
-
-  // Initialize modules
   initDisplay();
+  setDispenseOutputsActive(false);
 
-  // Initialize serial config interface
-  initSerialConfig();
-
-  const bool configured = isConfigured();
-  if (!configured) {
-    DEBUG_PRINTLN("\n⚠️  DEVICE NOT CONFIGURED!");
-    DEBUG_PRINTLN("Offline mode will run (cash only).");
-    DEBUG_PRINTLN("Configure via Serial interface (type HELP)\n");
-  }
   // Ensure relay is OFF (ACTIVE_HIGH hardware policy)
-  setRelay(false);
+  setDispenseOutputsActive(false);
   DEBUG_PRINT("Relay boot check (OFF) pin level: ");
   DEBUG_PRINTLN(digitalRead(RELAY_PIN) == HIGH ? "HIGH" : "LOW");
-  initSensors();
   initStateMachine();
 
   if (safeModeActive) {
     currentState = IDLE;
     balance = 0;
-    showTemporaryMessage("SAFE MODE", "Serial orqali tiklang");
+    DEBUG_PRINTLN("SAFE MODE: outputs locked OFF");
   } else {
     initUartReceiver(); // UART from Payment ESP32 (replaces initPayment)
-  }
-
-  // Optional WiFi status connection. Local vending works without network.
-  if (deviceConfig.wifi_ssid[0] != '\0' && !safeModeActive) {
-    setupWiFi();
   }
 
   DEBUG_PRINTLN("=== SYSTEM READY ===\n");
@@ -179,6 +156,7 @@ void setup() {
   char msg[64];
   snprintf(msg, sizeof(msg), "Device started %s", FIRMWARE_VERSION);
   publishLog("SYSTEM", msg);
+  showTemporaryMessage("READY", safeModeActive ? "SAFE MODE" : "LOCAL MODE");
 }
 
 // ============================================
@@ -191,60 +169,33 @@ void loop() {
   unsigned long now = millis();
 
   if (safeModeActive) {
-    // Keep actuator safe and only allow serial recovery commands.
-    if (isRelayOn()) {
-      setRelay(false);
+    // Keep actuator safe until a clean reboot.
+    if (isRelayOn() || isRelay2On()) {
+      setDispenseOutputsActive(false);
     }
     if (currentState != IDLE) {
       currentState = IDLE;
       balance = 0;
     }
 
-    if (now - lastDisplayUpdate >= config.displayUpdateInterval) {
-      lastDisplayUpdate = now;
-      updateDisplay();
-    }
-
-    handleSerialConfig();
     processConfigSave();
+    updateDisplay();
     delay(5);
     return;
-  }
-
-  // Optional WiFi connection state machine
-  if (deviceConfig.wifi_ssid[0] != '\0') {
-    processWiFi();
   }
 
   // Task 1: UART Payment Check (from ESP32 #1)
   // Payments now come via UART from Payment ESP32
   processUartReceiver();
 
-  // Task 2: Display Update
-  if (now - lastDisplayUpdate >= config.displayUpdateInterval) {
-    lastDisplayUpdate = now;
-    updateDisplay();
-  }
-
-  // Task 3: TDS Check
-  if (now - lastTdsCheck >= config.tdsCheckInterval) {
-    lastTdsCheck = now;
-    tdsPPM = readTDS();
-    publishTDS();
-  }
-
-  // Task 4: Session Timeout
-  // Uses millis() directly (not stale `now`) to prevent unsigned underflow.
-  // Applies to all non-IDLE states:
-  //   ACTIVE/PAUSED: timeout if user doesn't press START
-  //   DISPENSING: timeout if flow sensor stops (safety)
+  // Task 2: Session Timeout
   if (currentState != IDLE) {
     if (millis() - lastSessionActivity >= config.sessionTimeout) {
       handleSessionTimeout();
     }
   }
 
-  // Task 5: Heartbeat
+  // Task 3: Heartbeat
   if (now - lastHeartbeat >= config.heartbeatInterval) {
     lastHeartbeat = now;
     publishStatus();
@@ -264,7 +215,11 @@ void loop() {
     DEBUG_PRINTLN(getUartFrameDropCount());
   }
 
-  // Task 7: Button Handling (edge-based debounce)
+  if (currentState == DISPENSING) {
+    serviceRelayAutomation();
+  }
+
+  // Task 4: Button Handling (edge-based debounce)
   const unsigned long DEBOUNCE_MS = 100;
   const unsigned long BUTTON_ACTION_GAP_MS = 650;
   static int startLastRaw = HIGH;
@@ -310,19 +265,9 @@ void loop() {
     }
   }
 
-  // Task 7: Flow Sensor Processing
-  if (currentState == DISPENSING) {
-    processFlowSensor();
-    // HIGH FIX: lastSessionActivity is now updated ONLY when actual flow
-    // detected (inside processFlowSensor when litersDiff >= 0.01) This ensures
-    // valve closes if flow sensor fails (no fake activity)
-  }
-
-  // Task 9: Serial Configuration
-  handleSerialConfig();
-
-  // Deferred config save (debounced)
+  // Task 5: Deferred config save (debounced)
   processConfigSave();
+  updateDisplay();
 
   // Tasks Removed: PowerManager, Analytics, SystemHealth
 

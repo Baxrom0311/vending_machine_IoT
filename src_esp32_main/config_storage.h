@@ -8,38 +8,26 @@
 // DEVICE CONFIGURATION STRUCTURE
 // ============================================
 struct DeviceConfig {
-  // WiFi Settings
-  char wifi_ssid[32];
-  char wifi_password[64];
-
   // Device identity
   char device_id[32];
 
   // Vending Settings
   int pricePerLiter;
   unsigned long sessionTimeout;
-  float pulsesPerLiter;
-  int tdsThreshold;
-  float tdsTemperatureC;
-  float tdsCalibrationFactor;
   bool relayActiveHigh;
+  unsigned long relay1OnMs;
+  unsigned long relay1OffMs;
+  unsigned long relay2OnMs;
+  unsigned long relay2OffMs;
   int cashPulseValue;
   unsigned long cashPulseGapMs;
 
   // Intervals
   unsigned long paymentCheckInterval;
-  unsigned long displayUpdateInterval;
-  unsigned long tdsCheckInterval;
   unsigned long heartbeatInterval;
-
-  // Power Management
-  bool enablePowerSave;
-  int deepSleepStartHour;
-  int deepSleepEndHour;
 
   // Version & Flags
   int configVersion;
-  bool configured;
 };
 
 // ============================================
@@ -58,7 +46,5 @@ void scheduleConfigSave();
 void processConfigSave();
 void loadDefaultConfig();
 void validateConfig(); // Added validation Function
-void printCurrentConfig();
-bool isConfigured();
 
 #endif

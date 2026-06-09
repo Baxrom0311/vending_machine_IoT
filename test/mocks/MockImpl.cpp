@@ -10,10 +10,6 @@ __attribute__((weak)) unsigned long _millis_mock = 0;
 // Define ESP Mock
 EspClass ESP;
 
-// Define WiFi Mock
-#include "WiFi.h"
-WiFiClass WiFi;
-
 // Define Display Mock
 #include "display.h"
 LiquidCrystal_I2C lcd;
@@ -31,8 +27,18 @@ void displayError(const char *msg) {}
 
 // Define Relay Mock
 #include "../../src_esp32_main/relay_control.h"
-void setRelay(bool on) {}
-bool isRelayOn() { return false; }
+static bool relay1On = false;
+static bool relay2On = false;
+void setRelay(bool on) { relay1On = on; }
+void setRelay2(bool on) { relay2On = on; }
+bool isRelayOn() { return relay1On; }
+bool isRelay2On() { return relay2On; }
+void setDispenseOutputsActive(bool active) {
+  relay1On = active;
+  relay2On = active;
+}
+void serviceRelayAutomation() {}
+unsigned long getRelayLastChangeUs() { return 0; }
 
 // Define UART bridge mocks used by local config sync path
 void sendCashConfigToPaymentEsp(int pulseValue, unsigned long gapMs) {}
@@ -45,10 +51,6 @@ void flushUartReceiverPersistence() {}
 #include "esp_task_wdt.h"
 int wdt_reset_count = 0;
 void esp_task_wdt_reset() { wdt_reset_count++; }
-
-// Define Sensors Mock (readTDS)
-// We need to declare it if we don't include sensors.h
-int readTDS() { return 100; }
 
 // Define Alerts Mock (legacy; kept for linkage even if unused)
 enum AlertCategory { CAT_SYSTEM = 0 };

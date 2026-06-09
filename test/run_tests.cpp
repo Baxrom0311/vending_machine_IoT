@@ -1,8 +1,8 @@
 #include "mocks/Arduino.h"
 #include "mocks/Preferences.h"
-#include "mocks/WiFi.h"
 #include "mocks/display.h"
 #include "mocks/esp_task_wdt.h"
+#include "../../src_esp32_main/settings.h"
 #include <unity.h>
 
 // Include implementations for linkage
@@ -23,6 +23,7 @@
 void setUp(void) {
   // Reset global mocks
   preferences.clear();
+  setDispenseOutputsActive(false);
 
   // Reset State Machine logic
   initStateMachine();
@@ -32,8 +33,7 @@ void setUp(void) {
 
   // Sync 'config' global with 'deviceConfig'
   config.pricePerLiter = 1000;
-  config.pulsesPerLiter = 450.0;
-  config.sessionTimeout = 300000;
+  config.sessionTimeout = 180000;
   // Sync deviceConfig
   deviceConfig.pricePerLiter = 1000;
 }
@@ -52,21 +52,21 @@ void tearDown(void) {
 // ============================================
 void test_config_load_defaults(void) {
   loadDefaultConfig();
-  TEST_ASSERT_EQUAL_STRING("VendingMachine_001", deviceConfig.device_id);
-  TEST_ASSERT_EQUAL_INT(500, deviceConfig.pricePerLiter);
+  TEST_ASSERT_EQUAL_STRING(DEFAULT_DEVICE_ID, deviceConfig.device_id);
+  TEST_ASSERT_EQUAL_INT(DEFAULT_PRICE_PER_LITER, deviceConfig.pricePerLiter);
 }
 
 void test_config_validation(void) {
   deviceConfig.pricePerLiter = -500;
   deviceConfig.sessionTimeout = 500;
   validateConfig();
-  TEST_ASSERT_EQUAL_INT(500, deviceConfig.pricePerLiter);
-  TEST_ASSERT_EQUAL_UINT32(300000, deviceConfig.sessionTimeout);
+  TEST_ASSERT_EQUAL_INT(DEFAULT_PRICE_PER_LITER, deviceConfig.pricePerLiter);
+  TEST_ASSERT_EQUAL_UINT32(DEFAULT_SESSION_TIMEOUT_MS,
+                           deviceConfig.sessionTimeout);
 }
 
 void test_config_save_load(void) {
   deviceConfig.pricePerLiter = 2000;
-  strcpy(deviceConfig.wifi_ssid, "TestWiFi");
   saveConfigToStorage();
   TEST_ASSERT_EQUAL_INT(2000, preferences.getInt("price"));
 
@@ -88,20 +88,30 @@ void test_sm_paid_dispense(void) {
   balance = 500;
   handleStartButton();
   TEST_ASSERT_EQUAL(DISPENSING, currentState);
+  TEST_ASSERT_TRUE(isRelayOn());
+  TEST_ASSERT_TRUE(isRelay2On());
 }
 
-void test_sm_flow_logic(void) {
+void test_sm_pause_logic(void) {
   currentState = DISPENSING;
   balance = 1000;
-  config.pricePerLiter = 1000;
-  config.pulsesPerLiter = 100.0;
-  lastDispensedLiters = 0.0;
+  setDispenseOutputsActive(true);
+  handlePauseButton();
+  TEST_ASSERT_EQUAL(PAUSED, currentState);
+  TEST_ASSERT_EQUAL(1000, balance);
+  TEST_ASSERT_FALSE(isRelayOn());
+  TEST_ASSERT_FALSE(isRelay2On());
+}
 
-  flowPulseCount = 50; // 0.5L
-  processFlowSensor();
-
-  TEST_ASSERT_EQUAL(500, balance);
-  TEST_ASSERT_EQUAL_FLOAT(0.5, totalDispensedLiters);
+void test_sm_timeout_clears_balance(void) {
+  currentState = PAUSED;
+  balance = 3000;
+  setDispenseOutputsActive(true);
+  handleSessionTimeout();
+  TEST_ASSERT_EQUAL(IDLE, currentState);
+  TEST_ASSERT_EQUAL(0, balance);
+  TEST_ASSERT_FALSE(isRelayOn());
+  TEST_ASSERT_FALSE(isRelay2On());
 }
 
 // ============================================
@@ -115,7 +125,6 @@ void test_integration_local_payment(void) {
 
   TEST_ASSERT_EQUAL(5000, balance);
   TEST_ASSERT_EQUAL(ACTIVE, currentState);
-  TEST_ASSERT_EQUAL_FLOAT(5000, sessionStartBalance);
 }
 
 void test_integration_local_zero_payment_fail(void) {
@@ -142,7 +151,8 @@ int main(int argc, char **argv) {
   // SM
   RUN_TEST(test_sm_initial_state);
   RUN_TEST(test_sm_paid_dispense);
-  RUN_TEST(test_sm_flow_logic);
+  RUN_TEST(test_sm_pause_logic);
+  RUN_TEST(test_sm_timeout_clears_balance);
 
   // Integration
   RUN_TEST(test_integration_local_payment);

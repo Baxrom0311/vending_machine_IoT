@@ -1,8 +1,15 @@
 #include "config_storage.h"
 #include "debug.h"
+#include "settings.h"
 #include <Arduino.h>
 
-static const int CURRENT_CONFIG_VERSION = 5;
+static bool validRelayPhase(unsigned long onMs, unsigned long offMs) {
+  if (offMs == 0) {
+    return onMs == 0 || (onMs >= 100 && onMs <= 3600000);
+  }
+  return onMs >= 100 && onMs <= 3600000 && offMs >= 100 &&
+         offMs <= 3600000;
+}
 
 // ============================================
 // VALIDATE CONFIGURATION
@@ -11,7 +18,7 @@ void validateConfig() {
   bool changed = false;
 
   // Migration: apply new defaults for known old schema values.
-  if (deviceConfig.configVersion < CURRENT_CONFIG_VERSION) {
+  if (deviceConfig.configVersion < CURRENT_DEVICE_CONFIG_VERSION) {
     if (deviceConfig.cashPulseValue == 1000 && deviceConfig.cashPulseGapMs == 120) {
       deviceConfig.cashPulseValue = 500;
       deviceConfig.cashPulseGapMs = 600;
@@ -25,54 +32,48 @@ void validateConfig() {
       deviceConfig.pricePerLiter = 500;
       DEBUG_PRINTLN("Config migration: price default updated to 500 so'm/L");
     }
-    deviceConfig.configVersion = CURRENT_CONFIG_VERSION;
+    if (deviceConfig.relayActiveHigh != DEFAULT_RELAY_ACTIVE_HIGH) {
+      deviceConfig.relayActiveHigh = DEFAULT_RELAY_ACTIVE_HIGH;
+      DEBUG_PRINTLN("Config migration: relay polarity updated to ACTIVE_LOW");
+    }
+    deviceConfig.configVersion = CURRENT_DEVICE_CONFIG_VERSION;
     changed = true;
   }
 
   if (deviceConfig.pricePerLiter < 100 || deviceConfig.pricePerLiter > 100000) {
-    deviceConfig.pricePerLiter = 500;
+    deviceConfig.pricePerLiter = DEFAULT_PRICE_PER_LITER;
     changed = true;
   }
   if (deviceConfig.sessionTimeout < 1000) {
-    deviceConfig.sessionTimeout = 300000; // Reset to 5 min if too small
+    deviceConfig.sessionTimeout = DEFAULT_SESSION_TIMEOUT_MS;
     changed = true;
   }
-  if (deviceConfig.pulsesPerLiter < 1.0f ||
-      deviceConfig.pulsesPerLiter > 5000.0f) {
-    deviceConfig.pulsesPerLiter = 450.0f;
+  if (!validRelayPhase(deviceConfig.relay1OnMs, deviceConfig.relay1OffMs)) {
+    deviceConfig.relay1OnMs = 0;
+    deviceConfig.relay1OffMs = 0;
     changed = true;
   }
-  if (deviceConfig.tdsCalibrationFactor <= 0.01 ||
-      deviceConfig.tdsCalibrationFactor > 10.0) {
-    deviceConfig.tdsCalibrationFactor = 0.5; // Reset to reasonable default
+  if (!validRelayPhase(deviceConfig.relay2OnMs, deviceConfig.relay2OffMs)) {
+    deviceConfig.relay2OnMs = 0;
+    deviceConfig.relay2OffMs = 0;
     changed = true;
   }
   if (deviceConfig.cashPulseValue <= 0) {
-    deviceConfig.cashPulseValue = 1000;
+    deviceConfig.cashPulseValue = DEFAULT_CASH_PULSE_VALUE;
     changed = true;
   }
   if (deviceConfig.cashPulseGapMs < 20 || deviceConfig.cashPulseGapMs > 1000) {
-    deviceConfig.cashPulseGapMs = 600;
-    changed = true;
-  }
-  if (deviceConfig.displayUpdateInterval < 100 ||
-      deviceConfig.displayUpdateInterval > 10000) {
-    deviceConfig.displayUpdateInterval = 100;
+    deviceConfig.cashPulseGapMs = DEFAULT_CASH_PULSE_GAP_MS;
     changed = true;
   }
   if (deviceConfig.paymentCheckInterval < 200 ||
       deviceConfig.paymentCheckInterval > 600000) {
-    deviceConfig.paymentCheckInterval = 2000;
-    changed = true;
-  }
-  if (deviceConfig.tdsCheckInterval < 1000 ||
-      deviceConfig.tdsCheckInterval > 600000) {
-    deviceConfig.tdsCheckInterval = 5000;
+    deviceConfig.paymentCheckInterval = DEFAULT_PAYMENT_CHECK_INTERVAL_MS;
     changed = true;
   }
   if (deviceConfig.heartbeatInterval < 5000 ||
       deviceConfig.heartbeatInterval > 3600000) {
-    deviceConfig.heartbeatInterval = 30000;
+    deviceConfig.heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL_MS;
     changed = true;
   }
   if (changed) {

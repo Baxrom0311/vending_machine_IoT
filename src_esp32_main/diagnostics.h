@@ -5,12 +5,8 @@
 
 // Health check result structure
 struct HealthCheck {
-  bool flowSensorOk;
-  bool tdsSensorOk;
   bool cashAcceptorOk;
   bool relayOk;
-  bool displayOk;
-  bool wifiOk;
   uint32_t timestamp;
   int failureCount;
 };

@@ -1,7 +1,6 @@
 #include "state_machine.h"
 #include "config.h"
 #include "debug.h"
-#include "display.h"
 #include "hardware.h"
 #include "local_events.h"
 #include "relay_control.h"
@@ -13,15 +12,8 @@
 // ============================================
 SystemState currentState = IDLE;
 volatile long balance = 0;
-float totalDispensedLiters = 0.0;
-float sessionStartBalance = 0.0;
-
-volatile unsigned long flowPulseCount = 0;
-float lastDispensedLiters = 0.0;
 
 unsigned long lastSessionActivity = 0;
-static SystemState pausedFromState = IDLE;
-static float pendingDispenseCost = 0.0f;
 static unsigned long lastBusyStartHintMs = 0;
 
 // ============================================
@@ -30,13 +22,7 @@ static unsigned long lastBusyStartHintMs = 0;
 void initStateMachine() {
   currentState = IDLE;
   balance = 0;
-  totalDispensedLiters = 0.0;
-  sessionStartBalance = 0.0;
-  flowPulseCount = 0;
-  lastDispensedLiters = 0.0;
   lastSessionActivity = millis();
-  pausedFromState = IDLE;
-  pendingDispenseCost = 0.0f;
   lastBusyStartHintMs = 0;
 }
 
@@ -44,13 +30,6 @@ void initStateMachine() {
 // SESSION TIMER
 // ============================================
 void resetSessionTimer() { lastSessionActivity = millis(); }
-
-void resetFlowCounters() {
-  noInterrupts();
-  flowPulseCount = 0;
-  interrupts();
-  lastDispensedLiters = 0.0f;
-}
 
 // ============================================
 // APPLY CONFIG EFFECTS (Runtime)
@@ -63,24 +42,13 @@ void applyConfigStateEffects() {}
 void handleSessionTimeout() {
   DEBUG_PRINTLN("Session timeout!");
 
-  // Log lost balance
   if (balance > 0) {
-    char logMsg[128];
-    snprintf(logMsg, sizeof(logMsg),
-             "{\"event\":\"TIMEOUT\",\"balance_lost\":%.2f,\"dispensed\":%.2f}",
-             (float)balance, totalDispensedLiters);
-    publishLog("TIMEOUT", logMsg);
+    publishLog("TIMEOUT", "Session expired, balance cleared");
   }
 
-  // Reset
   balance = 0;
-  totalDispensedLiters = 0.0;
-  sessionStartBalance = 0.0;
   currentState = IDLE;
-  pausedFromState = IDLE;
-  pendingDispenseCost = 0.0f;
-
-  setRelay(false); // Close valve
+  setDispenseOutputsActive(false);
 
   publishStatus();
 }
@@ -93,59 +61,33 @@ void handleStartButton() {
 
   switch (currentState) {
   case IDLE:
-    if (balance > 0) {
-      currentState = DISPENSING;
-      resetFlowCounters();
-      totalDispensedLiters = 0.0f;
-      sessionStartBalance = balance;
-      pendingDispenseCost = 0.0f;
-      setRelay(true);
-
-      // Dispense started
-      publishLog("DISPENSE", "Started");
-      publishStatus();
-    } else {
-      // Feedback for user why start didn't work
-      showTemporaryMessage("PUL KIRITING", "");
-    }
-    break;
-
   case ACTIVE:
-    if (balance > 0) {
-      currentState = DISPENSING;
-      resetFlowCounters();
-      totalDispensedLiters = 0.0f;
-      sessionStartBalance = balance;
-      pendingDispenseCost = 0.0f;
-      setRelay(true);
-
-      // Dispense started
-      publishLog("DISPENSE", "Started");
-      publishStatus();
+    if (balance <= 0) {
+      DEBUG_PRINTLN("START ignored: balance is zero");
+      break;
     }
+    currentState = DISPENSING;
+    setDispenseOutputsActive(true);
+    publishLog("DISPENSE", "Started");
+    publishStatus();
     break;
 
   case PAUSED:
     if (balance > 0) {
       currentState = DISPENSING;
-      resetFlowCounters();
-      pendingDispenseCost = 0.0f;
-      setRelay(true);
-
-      pausedFromState = IDLE;
+      setDispenseOutputsActive(true);
       publishLog("DISPENSE", "Resumed");
       publishStatus();
     } else {
-      showTemporaryMessage("PUL KIRITING", "Yoki kuting...");
+      DEBUG_PRINTLN("RESUME ignored: balance is zero");
     }
     break;
 
   case DISPENSING:
     // START is intentionally ignored while water is already running.
-    // Throttle this hint to avoid I2C spam when user taps rapidly.
     if (millis() - lastBusyStartHintMs >= 1500UL) {
       lastBusyStartHintMs = millis();
-      showTemporaryMessage("PAUSE=STOP", "");
+      DEBUG_PRINTLN("START ignored: dispensing already active");
     }
     break;
 
@@ -158,77 +100,18 @@ void handleStartButton() {
 // PAUSE BUTTON HANDLER
 // ============================================
 void handlePauseButton() {
-  resetSessionTimer();
-
-  if (currentState == DISPENSING) {
-    const SystemState prevState = currentState;
-    pausedFromState = prevState;
-    currentState = PAUSED;
-    setRelay(false);
-
-    DEBUG_PRINTLN("PAUSE button pressed - Relay OFF");
-    char msg[32];
-    snprintf(msg, sizeof(msg), "%.2f", totalDispensedLiters);
-    publishLog("PAUSE", msg);
-    publishStatus();
-  }
-}
-
-// ============================================
-// FLOW SENSOR PROCESSING
-// ============================================
-void processFlowSensor() {
-  if (config.pulsesPerLiter <= 0.0f) {
+  if (balance <= 0) {
+    DEBUG_PRINTLN("PAUSE ignored: balance is zero");
     return;
   }
 
-  // Atomic read with overflow protection
-  unsigned long pulses = 0;
-  noInterrupts();
-  // Overflow protection - reset at 1M pulses (~450L @ 2200 pulses/L)
-  const unsigned long FLOW_COUNTER_MAX = 1000000UL;
-  if (flowPulseCount > FLOW_COUNTER_MAX) {
-    DEBUG_PRINTLN("⚠️ Flow counter reset (normal overflow prevention)");
-    flowPulseCount = 0;
-    lastDispensedLiters = 0.0;
-  }
-  pulses = flowPulseCount;
-  interrupts();
+  resetSessionTimer();
 
-  float currentLiters = pulses / config.pulsesPerLiter;
-  float litersDiff = currentLiters - lastDispensedLiters;
-
-  if (litersDiff >= 0.01) { // Every 10ml
-    lastDispensedLiters = currentLiters;
-
-    // HIGH FIX: Update lastSessionActivity ONLY when actual flow detected
-    // This prevents timeout during active dispensing but allows timeout if flow
-    // stops
-    lastSessionActivity = millis();
-
-    if (currentState == DISPENSING) {
-      // Fractional billing accumulator to avoid underbilling from int truncation.
-      pendingDispenseCost += litersDiff * static_cast<float>(config.pricePerLiter);
-      int cost = static_cast<int>(pendingDispenseCost);
-      pendingDispenseCost -= static_cast<float>(cost);
-
-      // FIX: Always update totalDispensedLiters first
-      totalDispensedLiters += litersDiff;
-
-      if (cost >= balance) {
-        // Balance depleted - FIX: Go to IDLE, not ACTIVE
-        balance = 0;
-        currentState = IDLE;
-        pendingDispenseCost = 0.0f;
-        setRelay(false);
-        resetSessionTimer(); // Prevent stale lastSessionActivity
-
-        publishLog("BALANCE", "Depleted");
-        publishStatus();
-      } else {
-        // Normal deduction
-        balance -= cost;
-      }
-    }
+  if (currentState == DISPENSING) {
+    currentState = PAUSED;
+    setDispenseOutputsActive(false);
+    DEBUG_PRINTLN("PAUSE button pressed - Relay OFF");
+    publishLog("PAUSE", "Paused");
+    publishStatus();
   }
 }

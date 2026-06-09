@@ -1,18 +1,10 @@
 #include "config_storage.h"
 #include "debug.h"
+#include "settings.h"
 #include <Preferences.h> // Ensure PlatformIO LDF picks up ESP32 Preferences
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
-
-static void copyToBuffer(char *dst, size_t dstSize, const String &src) {
-  size_t n = src.length();
-  if (n >= dstSize) {
-    n = dstSize - 1;
-  }
-  memcpy(dst, src.c_str(), n);
-  dst[n] = '\0';
-}
 
 // ============================================
 // GLOBAL INSTANCES
@@ -30,25 +22,21 @@ static bool nearlyEqualFloat(float a, float b) {
 }
 
 static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
-  if (strncmp(a.wifi_ssid, b.wifi_ssid, sizeof(a.wifi_ssid)) != 0)
-    return false;
-  if (strncmp(a.wifi_password, b.wifi_password, sizeof(a.wifi_password)) != 0)
-    return false;
   if (strncmp(a.device_id, b.device_id, sizeof(a.device_id)) != 0)
     return false;
   if (a.pricePerLiter != b.pricePerLiter)
     return false;
   if (a.sessionTimeout != b.sessionTimeout)
     return false;
-  if (!nearlyEqualFloat(a.pulsesPerLiter, b.pulsesPerLiter))
-    return false;
-  if (a.tdsThreshold != b.tdsThreshold)
-    return false;
-  if (!nearlyEqualFloat(a.tdsTemperatureC, b.tdsTemperatureC))
-    return false;
-  if (!nearlyEqualFloat(a.tdsCalibrationFactor, b.tdsCalibrationFactor))
-    return false;
   if (a.relayActiveHigh != b.relayActiveHigh)
+    return false;
+  if (a.relay1OnMs != b.relay1OnMs)
+    return false;
+  if (a.relay1OffMs != b.relay1OffMs)
+    return false;
+  if (a.relay2OnMs != b.relay2OnMs)
+    return false;
+  if (a.relay2OffMs != b.relay2OffMs)
     return false;
   if (a.cashPulseValue != b.cashPulseValue)
     return false;
@@ -56,21 +44,9 @@ static bool configsEqual(const DeviceConfig &a, const DeviceConfig &b) {
     return false;
   if (a.paymentCheckInterval != b.paymentCheckInterval)
     return false;
-  if (a.displayUpdateInterval != b.displayUpdateInterval)
-    return false;
-  if (a.tdsCheckInterval != b.tdsCheckInterval)
-    return false;
   if (a.heartbeatInterval != b.heartbeatInterval)
     return false;
-  if (a.enablePowerSave != b.enablePowerSave)
-    return false;
-  if (a.deepSleepStartHour != b.deepSleepStartHour)
-    return false;
-  if (a.deepSleepEndHour != b.deepSleepEndHour)
-    return false;
   if (a.configVersion != b.configVersion)
-    return false;
-  if (a.configured != b.configured)
     return false;
   return true;
 }
@@ -84,37 +60,25 @@ static void rememberSavedSnapshot() {
 // DEFAULT CONFIGURATION
 // ============================================
 void loadDefaultConfig() {
-  // WiFi (empty by default - must be provisioned explicitly)
-  deviceConfig.wifi_ssid[0] = '\0';
-  deviceConfig.wifi_password[0] = '\0';
-
-  strcpy(deviceConfig.device_id, "VendingMachine_001");
+  strcpy(deviceConfig.device_id, DEFAULT_DEVICE_ID);
 
   // Vending Settings
-  deviceConfig.pricePerLiter = 500;
-  deviceConfig.sessionTimeout = 300000; // 5 min
-  deviceConfig.pulsesPerLiter = 450.0;
-  deviceConfig.tdsThreshold = 100;
-  deviceConfig.tdsTemperatureC = 25.0;
-  deviceConfig.tdsCalibrationFactor = 0.5;
-  deviceConfig.relayActiveHigh = true; // Relay polarity (Active HIGH for modules)
-  deviceConfig.cashPulseValue = 1000;
-  deviceConfig.cashPulseGapMs = 600;
+  deviceConfig.pricePerLiter = DEFAULT_PRICE_PER_LITER;
+  deviceConfig.sessionTimeout = DEFAULT_SESSION_TIMEOUT_MS;
+  deviceConfig.relayActiveHigh = DEFAULT_RELAY_ACTIVE_HIGH;
+  deviceConfig.relay1OnMs = DEFAULT_RELAY1_ON_MS;
+  deviceConfig.relay1OffMs = DEFAULT_RELAY1_OFF_MS;
+  deviceConfig.relay2OnMs = DEFAULT_RELAY2_ON_MS;
+  deviceConfig.relay2OffMs = DEFAULT_RELAY2_OFF_MS;
+  deviceConfig.cashPulseValue = DEFAULT_CASH_PULSE_VALUE;
+  deviceConfig.cashPulseGapMs = DEFAULT_CASH_PULSE_GAP_MS;
 
   // Intervals
-  deviceConfig.paymentCheckInterval = 2000;
-  deviceConfig.displayUpdateInterval = 100;
-  deviceConfig.tdsCheckInterval = 5000;
-  deviceConfig.heartbeatInterval = 30000;
-
-  // Power Management
-  deviceConfig.enablePowerSave = false;
-  deviceConfig.deepSleepStartHour = 1; // 01:00
-  deviceConfig.deepSleepEndHour = 6;   // 06:00
+  deviceConfig.paymentCheckInterval = DEFAULT_PAYMENT_CHECK_INTERVAL_MS;
+  deviceConfig.heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL_MS;
 
   // Flags
-  deviceConfig.configVersion = 5;
-  deviceConfig.configured = false;
+  deviceConfig.configVersion = CURRENT_DEVICE_CONFIG_VERSION;
 }
 
 // ============================================
@@ -155,45 +119,43 @@ void loadConfigFromStorage() {
     return;
   }
 
-  // WiFi
-  String ssid = preferences.getString("wifi_ssid", "");
-  String pass = preferences.getString("wifi_pass", "");
-  copyToBuffer(deviceConfig.wifi_ssid, sizeof(deviceConfig.wifi_ssid), ssid);
-  copyToBuffer(deviceConfig.wifi_password, sizeof(deviceConfig.wifi_password),
-               pass);
-
-  String devId = preferences.getString("device_id", "VendingMachine_001");
-
-  copyToBuffer(deviceConfig.device_id, sizeof(deviceConfig.device_id), devId);
+  String devId = preferences.getString("device_id", DEFAULT_DEVICE_ID);
+  size_t n = devId.length();
+  if (n >= sizeof(deviceConfig.device_id)) {
+    n = sizeof(deviceConfig.device_id) - 1;
+  }
+  memcpy(deviceConfig.device_id, devId.c_str(), n);
+  deviceConfig.device_id[n] = '\0';
 
   // Vending Settings
-  deviceConfig.pricePerLiter = preferences.getInt("price", 500);
-  deviceConfig.sessionTimeout = preferences.getULong("sess_timeout", 300000);
-  deviceConfig.pulsesPerLiter = preferences.getFloat("pulses", 450.0);
-  deviceConfig.tdsThreshold = preferences.getInt("tds_thresh", 100);
-  deviceConfig.tdsTemperatureC = preferences.getFloat("tds_temp", 25.0);
-  deviceConfig.tdsCalibrationFactor = preferences.getFloat("tds_calib", 0.5);
+  deviceConfig.pricePerLiter =
+      preferences.getInt("price", DEFAULT_PRICE_PER_LITER);
+  deviceConfig.sessionTimeout =
+      preferences.getULong("sess_timeout", DEFAULT_SESSION_TIMEOUT_MS);
   deviceConfig.relayActiveHigh =
-      preferences.getBool("relay_active_high", true);
-  deviceConfig.cashPulseValue = preferences.getInt("cash_pulse", 1000);
-  deviceConfig.cashPulseGapMs = preferences.getULong("cash_gap", 600);
+      preferences.getBool("relay_active_high", DEFAULT_RELAY_ACTIVE_HIGH);
+  deviceConfig.relay1OnMs =
+      preferences.getULong("relay1_on", DEFAULT_RELAY1_ON_MS);
+  deviceConfig.relay1OffMs =
+      preferences.getULong("relay1_off", DEFAULT_RELAY1_OFF_MS);
+  deviceConfig.relay2OnMs =
+      preferences.getULong("relay2_on", DEFAULT_RELAY2_ON_MS);
+  deviceConfig.relay2OffMs =
+      preferences.getULong("relay2_off", DEFAULT_RELAY2_OFF_MS);
+  deviceConfig.cashPulseValue =
+      preferences.getInt("cash_pulse", DEFAULT_CASH_PULSE_VALUE);
+  deviceConfig.cashPulseGapMs =
+      preferences.getULong("cash_gap", DEFAULT_CASH_PULSE_GAP_MS);
 
   // Intervals
-  deviceConfig.paymentCheckInterval =
-      preferences.getULong("pay_interval", 2000);
-  deviceConfig.displayUpdateInterval =
-      preferences.getULong("disp_interval", 100);
-  deviceConfig.tdsCheckInterval = preferences.getULong("tds_interval", 5000);
-  deviceConfig.heartbeatInterval = preferences.getULong("hb_interval", 30000);
-
-  // Power Management
-  deviceConfig.enablePowerSave = preferences.getBool("enable_ps", false);
-  deviceConfig.deepSleepStartHour = preferences.getInt("sleep_start", 1);
-  deviceConfig.deepSleepEndHour = preferences.getInt("sleep_end", 6);
+  deviceConfig.paymentCheckInterval = preferences.getULong(
+      "pay_interval", DEFAULT_PAYMENT_CHECK_INTERVAL_MS);
+  deviceConfig.heartbeatInterval = preferences.getULong(
+      "hb_interval", DEFAULT_HEARTBEAT_INTERVAL_MS);
 
   // Meta
-  deviceConfig.configVersion = preferences.getInt("cfg_version", 1);
-  deviceConfig.configured = preferences.getBool("configured", false);
+  deviceConfig.configVersion =
+      preferences.getInt("cfg_version", CURRENT_DEVICE_CONFIG_VERSION);
 
   preferences.end();
 
@@ -230,10 +192,6 @@ void saveConfigToStorage() {
     }
   };
 
-  // WiFi
-  putStrChecked("wifi_ssid", deviceConfig.wifi_ssid);
-  putStrChecked("wifi_pass", deviceConfig.wifi_password);
-
   putStrChecked("device_id", deviceConfig.device_id);
 
   // Vending Settings
@@ -242,18 +200,17 @@ void saveConfigToStorage() {
   putFixedChecked(
       preferences.putULong("sess_timeout", deviceConfig.sessionTimeout),
       sizeof(uint32_t));
-  putFixedChecked(preferences.putFloat("pulses", deviceConfig.pulsesPerLiter),
-                  sizeof(float));
-  putFixedChecked(preferences.putInt("tds_thresh", deviceConfig.tdsThreshold),
-                  sizeof(int32_t));
-  putFixedChecked(preferences.putFloat("tds_temp", deviceConfig.tdsTemperatureC),
-                  sizeof(float));
-  putFixedChecked(
-      preferences.putFloat("tds_calib", deviceConfig.tdsCalibrationFactor),
-      sizeof(float));
   putFixedChecked(
       preferences.putBool("relay_active_high", deviceConfig.relayActiveHigh),
       sizeof(uint8_t));
+  putFixedChecked(preferences.putULong("relay1_on", deviceConfig.relay1OnMs),
+                  sizeof(uint32_t));
+  putFixedChecked(preferences.putULong("relay1_off", deviceConfig.relay1OffMs),
+                  sizeof(uint32_t));
+  putFixedChecked(preferences.putULong("relay2_on", deviceConfig.relay2OnMs),
+                  sizeof(uint32_t));
+  putFixedChecked(preferences.putULong("relay2_off", deviceConfig.relay2OffMs),
+                  sizeof(uint32_t));
   putFixedChecked(preferences.putInt("cash_pulse", deviceConfig.cashPulseValue),
                   sizeof(int32_t));
   putFixedChecked(preferences.putULong("cash_gap", deviceConfig.cashPulseGapMs),
@@ -264,28 +221,12 @@ void saveConfigToStorage() {
       preferences.putULong("pay_interval", deviceConfig.paymentCheckInterval),
       sizeof(uint32_t));
   putFixedChecked(
-      preferences.putULong("disp_interval", deviceConfig.displayUpdateInterval),
-      sizeof(uint32_t));
-  putFixedChecked(
-      preferences.putULong("tds_interval", deviceConfig.tdsCheckInterval),
-      sizeof(uint32_t));
-  putFixedChecked(
       preferences.putULong("hb_interval", deviceConfig.heartbeatInterval),
       sizeof(uint32_t));
-
-  // Power Management
-  putFixedChecked(preferences.putBool("enable_ps", deviceConfig.enablePowerSave),
-                  sizeof(uint8_t));
-  putFixedChecked(preferences.putInt("sleep_start", deviceConfig.deepSleepStartHour),
-                  sizeof(int32_t));
-  putFixedChecked(preferences.putInt("sleep_end", deviceConfig.deepSleepEndHour),
-                  sizeof(int32_t));
 
   // Meta
   putFixedChecked(preferences.putInt("cfg_version", deviceConfig.configVersion),
                   sizeof(int32_t));
-  putFixedChecked(preferences.putBool("configured", deviceConfig.configured),
-                  sizeof(uint8_t));
   putFixedChecked(preferences.putBool("has_config", true), sizeof(uint8_t));
 
   preferences.end();
@@ -313,83 +254,4 @@ void processConfigSave() {
     return;
   }
   saveConfigToStorage();
-}
-
-// ============================================
-// PRINT CURRENT CONFIG
-// ============================================
-void printCurrentConfig() {
-  Serial.println("\n========== CURRENT CONFIGURATION ==========");
-  Serial.println("[WiFi]");
-  Serial.print("  SSID: ");
-  Serial.println(deviceConfig.wifi_ssid[0] ? deviceConfig.wifi_ssid
-                                           : "(not set)");
-  Serial.print("  Password: ");
-  Serial.println(deviceConfig.wifi_password[0] ? "********" : "(not set)");
-
-  Serial.println("\n[Device]");
-  Serial.print("  Device ID: ");
-  Serial.println(deviceConfig.device_id);
-
-  Serial.println("\n[Vending]");
-  Serial.print("  Price per Liter: ");
-  Serial.print(deviceConfig.pricePerLiter);
-  Serial.println(" so'm");
-  Serial.print("  Session Timeout: ");
-  Serial.print(deviceConfig.sessionTimeout / 1000);
-  Serial.println(" sec");
-  Serial.print("  Pulses per Liter: ");
-  Serial.println(deviceConfig.pulsesPerLiter, 2);
-  Serial.print("  TDS Threshold: ");
-  Serial.print(deviceConfig.tdsThreshold);
-  Serial.println(" ppm");
-  Serial.print("  TDS Temperature: ");
-  Serial.print(deviceConfig.tdsTemperatureC, 1);
-  Serial.println(" C");
-  Serial.print("  TDS Calibration: ");
-  Serial.println(deviceConfig.tdsCalibrationFactor, 3);
-  Serial.print("  Relay Active High: ");
-  Serial.println(deviceConfig.relayActiveHigh ? "YES" : "NO");
-  Serial.print("  Cash Pulse Value: ");
-  Serial.print(deviceConfig.cashPulseValue);
-  Serial.println(" so'm");
-  Serial.print("  Cash Pulse Gap: ");
-  Serial.print(deviceConfig.cashPulseGapMs);
-  Serial.println(" ms");
-
-  Serial.print("  Payment Interval: ");
-  Serial.print(deviceConfig.paymentCheckInterval);
-  Serial.println(" ms");
-  Serial.print("  Display Interval: ");
-  Serial.print(deviceConfig.displayUpdateInterval);
-  Serial.println(" ms");
-  Serial.print("  TDS Interval: ");
-  Serial.print(deviceConfig.tdsCheckInterval);
-  Serial.println(" ms");
-  Serial.print("  Heartbeat Interval: ");
-  Serial.print(deviceConfig.heartbeatInterval);
-  Serial.println(" ms");
-
-  Serial.println("\n[Power]");
-  Serial.print("  Enable Power Save: ");
-  Serial.println(deviceConfig.enablePowerSave ? "YES" : "NO");
-  Serial.print("  Deep Sleep Window: ");
-  Serial.print(deviceConfig.deepSleepStartHour);
-  Serial.print(":00 - ");
-  Serial.print(deviceConfig.deepSleepEndHour);
-  Serial.println(":00");
-
-  Serial.println("\n[Status]");
-  Serial.print("  Configured: ");
-  Serial.println(deviceConfig.configured ? "YES" : "NO");
-  Serial.print("  Config Version: ");
-  Serial.println(deviceConfig.configVersion);
-  Serial.println("==========================================\n");
-}
-
-// ============================================
-// CHECK IF CONFIGURED
-// ============================================
-bool isConfigured() {
-  return deviceConfig.configured;
 }

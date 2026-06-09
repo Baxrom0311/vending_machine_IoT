@@ -18,12 +18,6 @@ enum SystemState {
 // ============================================
 extern SystemState currentState;
 extern volatile long balance;
-extern float totalDispensedLiters;
-extern float sessionStartBalance;
-
-// Flow sensor
-extern volatile unsigned long flowPulseCount;
-extern float lastDispensedLiters;
 
 // Timers
 extern unsigned long lastSessionActivity;
@@ -35,9 +29,7 @@ void initStateMachine();
 void handleStartButton();
 void handlePauseButton();
 void handleSessionTimeout();
-void processFlowSensor();
 void resetSessionTimer();
-void resetFlowCounters();
 void applyConfigStateEffects();
 
 #endif

@@ -1,7 +1,6 @@
 #include "local_events.h"
 #include "config_storage.h"
 #include "debug.h"
-#include "sensors.h"
 #include "state_machine.h"
 #include <climits>
 #include <cstdio>
@@ -54,8 +53,6 @@ void processPayment(int amount, const char *source, const char *txnId,
   if (balance > 0) {
     if (currentState == IDLE) {
       currentState = ACTIVE;
-      totalDispensedLiters = 0.0f;
-      sessionStartBalance = balance;
     } else if (currentState == DISPENSING) {
       DEBUG_PRINTLN("Additional payment during DISPENSING");
     } else if (currentState == PAUSED) {
@@ -92,11 +89,7 @@ void publishStatus() {
   DEBUG_PRINT(" state=");
   DEBUG_PRINT(stateName(currentState));
   DEBUG_PRINT(" balance=");
-  DEBUG_PRINT(balance);
-  DEBUG_PRINT(" dispensed=");
-  DEBUG_PRINT(totalDispensedLiters, 2);
-  DEBUG_PRINT(" tds=");
-  DEBUG_PRINTLN(tdsPPM);
+  DEBUG_PRINTLN(balance);
 }
 
 void publishLog(const char *event, const char *message) {
